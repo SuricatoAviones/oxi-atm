@@ -8,6 +8,7 @@ mod command;
 mod customisation;
 mod error;
 mod host;
+mod modes;
 mod reply;
 mod terminal;
 mod types;
@@ -20,6 +21,7 @@ pub use customisation::{
 };
 pub use error::ParseError;
 pub use host::{parse_host, HostMessage, ParseOptions};
+pub use modes::{disposition, Disposition, ModeContext, OperationalMode};
 pub use reply::{InteractiveTransactionResponse, TransactionReply};
 pub use terminal::{StatusDescriptor, TerminalMessage, TransactionRequest};
 pub use types::{
