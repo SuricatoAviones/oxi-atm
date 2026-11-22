@@ -5,9 +5,11 @@
 //! parseo NDC vive en `oxi-core` — una sola fuente de verdad del formato.
 
 mod codec;
+mod connect;
 mod error;
 
 pub use codec::{FrameCodec, LenPrefix2Be};
+pub use connect::{connect_with_backoff, ConnectionState, ReconnectConfig};
 pub use error::NetError;
 
 /// Nombre del crate, para verificación de armado del workspace.

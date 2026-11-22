@@ -16,6 +16,7 @@ license = "MIT"
 thiserror = "2"
 proptest = "1"
 bytes = "1"
+tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync", "macros"] }
 
 # Lints del workspace (skill rust-best-practices, Cap. 2): set curado.
 # `cargo clippy -- -D warnings` los vuelve errores en cada tarea del DoD.
