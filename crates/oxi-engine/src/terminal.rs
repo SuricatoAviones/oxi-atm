@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use oxi_core::{
-    ConfigParams, CustomisationData, DateTimeLoad, Ecpl, FitDef, Luno, Mcn, OperationalMode,
-    ScreenDef, ScreenSelector, StateNumber, StateTableDef, StatusDescriptor, TerminalMessage,
+    ConfigParams, CustomisationData, DateTimeLoad, Ecpl, Fdk, FdkMask, FitDef, Luno, Mcn,
+    OperationalMode, ScreenDef, ScreenSelector, StateNumber, StateTableDef, StatusDescriptor,
+    TerminalMessage,
 };
 
 use crate::event::{Action, BufferId, Card, Event, Key, Pending};
@@ -104,7 +105,7 @@ impl Config {
     }
 
     /// ¿Está activa la opción ECPL con este código? (helper de la matriz).
-    fn option(&self, number: u8) -> Option<u16> {
+    pub(crate) fn option(&self, number: u8) -> Option<u16> {
         self.options.get(&number).copied()
     }
 }
@@ -131,6 +132,16 @@ pub struct Terminal {
     awaiting_reply: bool,
     /// Pantalla mostrada actualmente (para el runtime/UI).
     screen: Option<ScreenSelector>,
+    /// Next state por FDK del estado corriente (F/H/X/Y).
+    fdk_next: HashMap<char, StateNumber>,
+    /// Salida por time-out del estado corriente (se usa en T3.7).
+    timeout_next: Option<StateNumber>,
+    /// Salida por Cancel del estado corriente.
+    cancel_next: Option<StateNumber>,
+    /// Bandera de tarjeta del último Transaction Reply (SPEC §4.3).
+    card_return: Option<oxi_core::CardReturnFlag>,
+    /// Guarda contra recursión del cierre por defecto (cadena J→000→…).
+    closing: bool,
 }
 
 impl Default for Terminal {
@@ -157,6 +168,11 @@ impl Terminal {
             pending: None,
             awaiting_reply: false,
             screen: None,
+            fdk_next: HashMap::new(),
+            timeout_next: None,
+            cancel_next: None,
+            card_return: None,
+            closing: false,
         }
     }
 
@@ -234,62 +250,75 @@ impl Terminal {
     }
 
     fn handle_key(&mut self, key: Key) -> Vec<Action> {
+        if key == Key::Cancel {
+            return crate::state_exec::on_cancel(self);
+        }
+        // FDK: si el estado corriente le asignó un next state, transiciona
+        // (los estados X/Y además escriben buffers antes: on_fdk_pressed).
+        if let Key::Fdk(fdk) = key {
+            return match self.fdk_next_for(fdk) {
+                Some(next) => crate::state_exec::on_fdk_pressed(self, fdk, next),
+                None => Vec::new(),
+            };
+        }
+        // Enter equivale a FDK 'A' (manual §2-17, §2-23).
+        if key == Key::Enter {
+            return match self.fdk_next_for(Fdk::A) {
+                Some(next) => crate::state_exec::on_fdk_pressed(self, Fdk::A, next),
+                None => Vec::new(),
+            };
+        }
         match &self.pending {
-            Some(Pending::Digits { target, min, max }) => {
-                let (min, max, target) = (*min, *max, *target);
-                self.handle_digit_key(key, target, min, max)
-            }
-            Some(Pending::Pin { max }) => self.handle_pin_key(key, *max),
-            _ => Vec::new(),
-        }
-    }
-
-    fn handle_digit_key(
-        &mut self,
-        key: Key,
-        target: BufferId,
-        min: usize,
-        max: usize,
-    ) -> Vec<Action> {
-        let buffer = match target {
-            BufferId::Amount => &mut self.buffers.amount,
-            BufferId::B => &mut self.buffers.b,
-            BufferId::C => &mut self.buffers.c,
-        };
-        match key {
-            Key::Digit(digit) => {
-                if buffer.len() < max {
-                    buffer.push(digit);
+            Some(Pending::Digits { target, max }) => {
+                let (max, target) = (*max, *target);
+                match target {
+                    BufferId::Amount => {
+                        // El importe se mantiene rellenado a ceros; cada
+                        // dígito entra por la derecha (shift, §2-17).
+                        let width = self.buffers.amount.len();
+                        match key {
+                            Key::Digit(digit) => {
+                                let mut digits =
+                                    self.buffers.amount.trim_start_matches('0').to_owned();
+                                digits.push(digit);
+                                if digits.len() > max {
+                                    digits = digits[digits.len() - max..].to_owned();
+                                }
+                                self.buffers.amount = format!("{digits:0>width$}");
+                            }
+                            Key::Clear => self.buffers.amount = "0".repeat(width),
+                            _ => {}
+                        }
+                    }
+                    BufferId::B | BufferId::C => {
+                        let buffer = match target {
+                            BufferId::B => &mut self.buffers.b,
+                            _ => &mut self.buffers.c,
+                        };
+                        match key {
+                            Key::Digit(digit) => {
+                                if buffer.len() < max {
+                                    buffer.push(digit);
+                                }
+                            }
+                            Key::Clear => buffer.clear(),
+                            _ => {}
+                        }
+                    }
                 }
                 Vec::new()
             }
-            Key::Enter => {
-                if buffer.len() >= min {
-                    // El estado que pidió la captura decide la transición;
-                    // se la notifica vía el intérprete (T3.4).
-                    crate::state_exec::on_digits_accepted(self)
-                } else {
-                    Vec::new()
+            Some(Pending::Pin { max }) => {
+                let max = *max;
+                match key {
+                    Key::Digit(digit) => {
+                        if self.buffers.pin.len() < max {
+                            self.buffers.pin.push(digit);
+                        }
+                    }
+                    Key::Clear => self.buffers.pin.clear(),
+                    _ => {}
                 }
-            }
-            Key::Clear => {
-                buffer.clear();
-                Vec::new()
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    fn handle_pin_key(&mut self, key: Key, max: usize) -> Vec<Action> {
-        match key {
-            Key::Digit(digit) => {
-                if self.buffers.pin.len() < max {
-                    self.buffers.pin.push(digit);
-                }
-                Vec::new()
-            }
-            Key::Clear => {
-                self.buffers.pin.clear();
                 Vec::new()
             }
             _ => Vec::new(),
@@ -380,6 +409,89 @@ impl Terminal {
 
     pub(crate) fn awaiting_reply(&self) -> bool {
         self.awaiting_reply
+    }
+
+    /// Limpia la configuración de teclado al cambiar de estado.
+    pub(crate) fn clear_state_keyboard(&mut self) {
+        self.fdk_next.clear();
+        self.timeout_next = None;
+        self.cancel_next = None;
+    }
+
+    /// Asigna el next state por FDK desde las entradas `first..first+4`
+    /// (F/H: entradas 5-8 = FDK A-D; 255 desactiva).
+    pub(crate) fn set_fdk_next_from_entries(&mut self, entries: &str, first: usize) {
+        for (offset, fdk) in [Fdk::A, Fdk::B, Fdk::C, Fdk::D].into_iter().enumerate() {
+            let text = entries
+                .get((first - 2 + offset) * 3..(first - 2 + offset) * 3 + 3)
+                .and_then(|t| t.parse::<u16>().ok());
+            if let Some(value) = text {
+                if value != 255 && value <= 999 {
+                    if let Ok(state) = oxi_core::StateNumber::new(value) {
+                        self.fdk_next.insert(fdk.as_char(), state);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Asigna el mismo next state a todas las FDK activas de la máscara
+    /// (X/Y: cualquier FDK lleva al mismo estado, §2-59/§2-62).
+    pub(crate) fn set_fdk_next_uniform(&mut self, next: StateNumber, mask: FdkMask) {
+        for fdk in [
+            Fdk::A,
+            Fdk::B,
+            Fdk::C,
+            Fdk::D,
+            Fdk::F,
+            Fdk::G,
+            Fdk::H,
+            Fdk::I,
+        ] {
+            if mask.is_active(fdk) {
+                self.fdk_next.insert(fdk.as_char(), next);
+            }
+        }
+    }
+
+    /// Next state de una FDK (si el estado la tiene activa).
+    pub(crate) fn fdk_next_for(&self, fdk: Fdk) -> Option<StateNumber> {
+        self.fdk_next.get(&fdk.as_char()).copied()
+    }
+
+    pub(crate) fn set_timeout_next(&mut self, next: Option<StateNumber>) {
+        self.timeout_next = next;
+    }
+
+    pub(crate) fn set_cancel_next(&mut self, next: Option<StateNumber>) {
+        self.cancel_next = next;
+    }
+
+    pub(crate) fn cancel_next(&self) -> Option<StateNumber> {
+        self.cancel_next
+    }
+
+    /// Bandera de tarjeta del último Transaction Reply.
+    pub(crate) fn card_return(&self) -> Option<oxi_core::CardReturnFlag> {
+        self.card_return
+    }
+
+    pub(crate) fn set_card_return(&mut self, flag: Option<oxi_core::CardReturnFlag>) {
+        self.card_return = flag;
+    }
+
+    /// La tarjeta fue retenida/entregada al dispositivo.
+    pub(crate) fn take_card(&mut self) {
+        self.card = None;
+    }
+
+    /// ¿Está en curso una cadena de cierre por defecto? (guarda anti-recursión)
+    pub(crate) fn is_closing(&self) -> bool {
+        self.closing
+    }
+
+    pub(crate) fn set_closing(&mut self, closing: bool) {
+        self.closing = closing;
     }
 
     /// Rota el MCN según el rango configurado (opción 34, §10-27).
@@ -506,19 +618,37 @@ pub(crate) fn apply_customisation(terminal: &mut Terminal, data: CustomisationDa
 /// Cierre por defecto ante un next state inválido (manual §2-1): termina la
 /// transacción entregando tarjeta; usa el estado 200 si está descargado
 /// (SPEC Q10), si no, vuelve a esperar tarjeta.
+///
+/// Guarda anti-recursión: si una cadena de cierre vuelve a caer acá (p.ej.
+/// J 200 → next 000 inexistente), se detiene en idle en vez de desbordar la
+/// pila.
 pub(crate) fn default_close(terminal: &mut Terminal) -> Vec<Action> {
     terminal.set_awaiting_reply(false);
-    let close = StateNumber::new(DEFAULT_CLOSE_STATE).expect("200 es válido");
-    if terminal.states().contains_key(&close) {
-        return crate::state_exec::enter_state(terminal, close);
+    if terminal.is_closing() {
+        terminal.set_pending(None);
+        terminal.set_current(None);
+        return vec![Action::Log(
+            "default close recursivo: se detiene en idle".into(),
+        )];
     }
-    terminal.set_pending(None);
-    terminal.set_current(None);
-    let mut actions = vec![Action::Log(
-        "default close: sin estado de cierre descargado; se vuelve a esperar tarjeta".into(),
-    )];
-    if terminal.card().is_some() {
-        actions.push(Action::EjectCard);
+    terminal.set_closing(true);
+    let close = StateNumber::new(DEFAULT_CLOSE_STATE).expect("200 es válido");
+    let mut actions = if terminal.states().contains_key(&close) {
+        crate::state_exec::enter_state(terminal, close)
+    } else {
+        terminal.set_pending(None);
+        terminal.set_current(None);
+        let mut fallback = vec![Action::Log(
+            "default close: sin estado de cierre descargado; se vuelve a esperar tarjeta".into(),
+        )];
+        if terminal.card().is_some() {
+            fallback.push(Action::EjectCard);
+        }
+        fallback
+    };
+    terminal.set_closing(false);
+    if actions.is_empty() {
+        actions.push(Action::Log("default close aplicado".into()));
     }
     actions
 }
@@ -619,15 +749,18 @@ mod tests {
             StateTableDef {
                 number: StateNumber::new(200).expect("en rango"),
                 state_type: 'J',
-                entries: "052000052052052052052020".into(),
+                // receipt 052, next 000, resto 052
+                entries: "052000052052052052052000".into(),
             },
         );
         let actions = default_close(&mut terminal);
+        // El J del 200 mostró su pantalla de recibo (052): el cierre ejecutó.
         assert!(
-            actions
-                .iter()
-                .any(|a| matches!(a, Action::Log(message) if message.contains("default close") || message.contains("J"))),
-            "debe intentar el estado de cierre 200: {actions:?}"
+            actions.iter().any(|a| matches!(
+                a,
+                Action::Display(Some(ScreenSelector::Customer(id))) if id.value() == 52
+            )),
+            "debe ejecutar el estado de cierre 200: {actions:?}"
         );
     }
 }

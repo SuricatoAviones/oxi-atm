@@ -99,8 +99,6 @@ pub enum Pending {
     Digits {
         /// Buffer destino.
         target: BufferId,
-        /// Cantidad mínima para aceptar Enter.
-        min: usize,
         /// Cantidad máxima de dígitos.
         max: usize,
     },
