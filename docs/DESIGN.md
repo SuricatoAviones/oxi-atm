@@ -12,7 +12,7 @@ flowchart LR
   subgraph runtime[oxi-ui · runtime glue (tokio)]
     RT{{Supervisor de tareas}}
     TMR[Scheduler de timers]
-    CLI[CLI / futura GUI]
+    CLI[CLI / GUI]
   end
   subgraph net[oxi-net]
     CONN[Conexión TCP ATM→host]
@@ -278,6 +278,9 @@ pub struct LenPrefix2BE;                    // default confirmado por el dueño:
   `enter/clear/cancel`, `dump states|screens|fits|buffers`, `inject fault ...`.
 - Salida: log estructurado + pantalla "de texto" renderizando las pantallas NDC en el terminal
   (suficiente para seguir una transacción de punta a punta).
+- Bin `oxi-gui` (feature `gui`): ventana egui/eframe con pantalla, FDKs, teclado, tarjeta,
+  dispensador y registro. Consume `UiUpdate` por frame y envía `Event` con `try_send`; el
+  view-model (`GuiState`) se testea sin abrir ventana. No cambia core/engine.
 
 ## 7. Configuración del simulador (serde, TOML)
 

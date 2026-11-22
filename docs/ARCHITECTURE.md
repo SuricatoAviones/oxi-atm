@@ -41,7 +41,7 @@ Workspace de Cargo en `crates/` (según AGENTS.md). Grafo de dependencias:
         │               │
         └───────┬───────┘
         ┌───────┴───────┐
-        │    oxi-ui     │  (ensambla engine+net; CLI en v1)
+        │    oxi-ui     │  (ensambla engine+net; CLI + GUI opcional)
         │ binario + lib │
         └───────────────┘
 ```
@@ -52,7 +52,7 @@ Workspace de Cargo en `crates/` (según AGENTS.md). Grafo de dependencias:
 | `oxi-engine` | Máquina de estados del terminal, customización (states/screens/FITs/config), buffers, timers virtuales, hardware virtual, crypto de PIN | `oxi-core` | **Sin tokio, sin I/O, sin UI** |
 | `oxi-net` | Conexión TCP (ATM→host), codec de encuadre configurable, reconexión con backoff, tracing de frames | `oxi-core`, `tokio` | No conoce `oxi-engine` |
 | `oxi-host-mock` | Host falso: baja customización sintética, responde TRQ (auto/moderado), inyecta fallas; binario independiente + librería para tests | `oxi-core`, `tokio` | No conoce `oxi-engine` |
-| `oxi-ui` | Ensamblado (runtime glue): canales entre net↔engine↔hardware↔interfaz; CLI en v1 | `oxi-engine`, `oxi-net` | Es el único que toca todo |
+| `oxi-ui` | Ensamblado (runtime glue): canales entre net↔engine↔hardware↔interfaz; CLI + GUI opcional | `oxi-engine`, `oxi-net` | Es el único que toca todo |
 
 Reglas duras (de AGENTS.md, verificables con `cargo tree`):
 
@@ -127,12 +127,15 @@ reemplaza (cada load pisa el contenido, como en el protocolo).
 
 - La UI es un suscriptor más de acciones (`Display`, `Log`) y un productor más de eventos
   (`KeyPressed`, `CardInserted`). El engine no sabe si hay alguien mirando.
-- **v1: CLI** (`oxi-ui`): log de tracing con frames hex, comandos por stdin para insertar
-  tarjeta, teclear PIN, pulsar FDKs, ver buffers y customización. Suficiente para probar hosts
-  reales con netcat-like workflows.
-- **v2 (después del núcleo, con aprobación): interfaz gráfica** (pantalla CRT emulado, FDKs
-  clicables, estados visibles) reemplazando la capa CLI sin tocar `oxi-engine` ni `oxi-core`.
-  La GUI es out-of-scope hasta entonces (AGENTS.md).
+- **CLI** (`oxi-ui`, `src/main.rs`): log de tracing con frames hex, comandos por stdin para
+  insertar tarjeta, teclear PIN, pulsar FDKs, ver buffers y customización. Es la interfaz de
+  referencia y la que usan los tests; no compila egui.
+- **GUI opcional** (`oxi-gui`, feature `gui`): binario aparte con `egui/eframe` que reutiliza el
+  mismo `runtime::spawn`, perfil TOML y `UiUpdate`. Dibuja pantalla, FDKs, teclado, tarjeta,
+  dispensador y logs; traduce clics/teclas a `Event` con `RuntimeHandle::try_send` y consume las
+  actualizaciones en cada frame. No toca `oxi-engine` ni `oxi-core`.
+- La GUI exige Rust 1.95 (eframe 0.37) y, bajo WSL, WSLg con Mesa y libs de Wayland/X11. El
+  núcleo y la CLI conservan su MSRV anterior (1.85).
 
 ## 7. Estrategia de pruebas
 

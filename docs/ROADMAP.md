@@ -172,10 +172,23 @@ driver real pero definidos en el manual) · estados R/S/T/b/m · reject fino com
 calificadores de la Tabla 10-37) · teclado numérico completo · Override Reserved Screens.
 Cada ítem = tarea propia, se planifica al cerrar la fase 7.
 
-### Fase 9 — GUI (después del núcleo, fuera de v1)
+### Fase 9 — GUI (después del núcleo) · rama `phase/09-gui`
 
-Reemplaza la capa CLI de `oxi-ui` sin tocar core/engine (ARCHITECTURE §6). Se diseña aparte
-cuando llegue el momento.
+Reemplaza la capa CLI de `oxi-ui` sin tocar core/engine (ARCHITECTURE §6). La CLI se conserva
+como interfaz de referencia y para tests; la GUI es un binario aparte (`oxi-gui`) detrás de la
+feature `gui`, con `egui/eframe` (MIT/Apache-2.0).
+
+| Tarea | Contenido |
+|---|---|
+| T9.1 | Esqueleto GUI: feature `gui`, binario `oxi-gui`, puente tokio↔egui (`RuntimeHandle::try_send`, consumo de `UiUpdate` por frame) y `GuiState` puro con tests |
+| T9.2 | Layout ATM: pantalla central con el render de `Screen`, barra de conexión/modo, 8 FDKs laterales y teclado numérico + Enter/Clear/Cancel cableados al motor |
+| T9.3 | Hardware y operación: selector/inserción de tarjeta, dispensador con "Retirar efectivo", panel de logs y atajos de teclado físico |
+| T9.4 | Tests del view-model, README con instrucciones de la GUI y verificación manual de la transacción completa contra `oxi-host-mock` |
+
+**Criterio de aceptación**: la demo completa (tarjeta → PIN → importe → aprobación → efectivo)
+se puede hacer con el mouse contra el mock; `fmt`, `clippy --all-features` y `test` verdes.
+**Entorno**: en Windows con Smart App Control activo, la ventana se ejecuta bajo WSLg (Mesa +
+libs de Wayland/X11).
 
 ## 3. Dependencias entre fases y preguntas abiertas
 
