@@ -212,6 +212,10 @@ dependencies = [
 [[package]]
 name = "oxi-engine"
 version = "0.1.0"
+dependencies = [
+ "oxi-core",
+ "thiserror",
+]
 
 [[package]]
 name = "oxi-host-mock"

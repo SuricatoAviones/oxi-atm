@@ -4,6 +4,16 @@
 //! Sin tokio, sin red, sin reloj (ver `docs/DESIGN.md` §3). Depende solo de
 //! `oxi-core`.
 
+mod crypto;
+mod event;
+mod host_ops;
+mod state_exec;
+mod terminal;
+
+pub use crypto::{iso0_pin_block, CryptoError};
+pub use event::{Action, BufferId, Card, Event, Key, Pending};
+pub use terminal::{Buffers, Terminal};
+
 /// Nombre del crate, para verificación de armado del workspace.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 

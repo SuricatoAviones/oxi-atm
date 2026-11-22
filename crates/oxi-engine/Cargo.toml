@@ -5,10 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Dependencias previstas (se agregan en la fase que las usa):
-# - fase 3 (máquina de estados): oxi-core (path), serde, thiserror
-# Regla dura (AGENTS.md): JAMÁS tokio, I/O ni interfaz en este crate.
+# Fase 3 (máquina de estados): el motor es PURO (DESIGN §3): sin tokio, sin
+# I/O, sin interfaz. Solo conoce al core (tipos del protocolo).
 [dependencies]
-
-[lints]
-workspace = true
+oxi-core = { path = "../oxi-core" }
+thiserror.workspace = true
