@@ -50,14 +50,18 @@ pub(crate) fn enter_state(terminal: &mut Terminal, number: StateNumber) -> Vec<A
     };
     match table.state_type {
         'A' => state_card_read(terminal, &table),
+        'B' => state_pin_entry(terminal, &table),
         'D' => state_preset_opcode(terminal, &table),
         'F' => state_amount_entry(terminal, &table),
         'H' => state_info_entry(terminal, &table),
+        'I' => state_transaction_request(terminal, &table),
         'J' => state_close(terminal, &table),
+        'K' => state_fit_switch(terminal, &table),
         'X' => state_fdk_info(terminal, &table),
         'Y' => state_eight_fdk(terminal, &table),
         'W' => state_fdk_switch(terminal, &table),
-        // K/_ (FIT switch), B (PIN) e I (transaction) llegan en T3.5/T3.6.
+        // '_' (FIT switch ampliado), M, R, S, T, V, b, k, m, > y w llegan en
+        // fases posteriores (ROADMAP).
         other => vec![
             Action::Log(format!(
                 "estado {number} tipo '{other}': no implementado todavía"
@@ -129,6 +133,7 @@ pub(crate) fn on_fdk_pressed(terminal: &mut Terminal, fdk: Fdk, next: StateNumbe
         .states()
         .get(&current)
         .map(|table| table.state_type);
+    let mut actions = Vec::new();
     match state_type {
         // Y: guarda el keycode en el buffer de FDK y escribe el op-code en
         // las posiciones de la máscara (§2-62).
@@ -152,9 +157,164 @@ pub(crate) fn on_fdk_pressed(terminal: &mut Terminal, fdk: Fdk, next: StateNumbe
                 apply_fdk_info_value(terminal, &table, fdk);
             }
         }
+        // B: valida el PIN remoto formando el bloque ISO-0 antes de seguir
+        // (manual §11-3; el FIT del driver real pide verificación remota).
+        Some('B') => {
+            let pin = terminal.buffers().pin.clone();
+            let pan = terminal
+                .card()
+                .and_then(|card| card.track2.clone())
+                .unwrap_or_default();
+            match crate::crypto::iso0_pin_block(&pin, &pan) {
+                Ok(block) => terminal.buffers_mut().pin_block = Some(block),
+                Err(err) => actions.push(Action::Log(format!(
+                    "PIN block no formado: {err}; el TRQ irá sin buffer A"
+                ))),
+            }
+        }
         _ => {}
     }
-    enter_state(terminal, next)
+    actions.extend(enter_state(terminal, next));
+    actions
+}
+
+/// FIT 匹配 por FIID (manual §8-1, §8-2): primera FIT cuyo PFIID coincide
+/// con los bytes de la pista 2 en el offset PIDDX; 0xFF es comodín.
+fn fit_match(terminal: &Terminal) -> Option<&oxi_core::FitDef> {
+    let track2 = terminal.card()?.track2.as_ref()?;
+    let bytes = track2.as_bytes();
+    terminal.fits().values().find(|fit| {
+        let Some(&pidx) = fit.entries.first() else {
+            return false;
+        };
+        let pidx = pidx as usize;
+        let Some(pfiid) = fit.entries.get(1..6) else {
+            return false;
+        };
+        pidx + 5 <= bytes.len()
+            && pfiid
+                .iter()
+                .enumerate()
+                .all(|(offset, &byte)| byte == 0xFF || byte == bytes[pidx + offset])
+    })
+}
+
+/// K - FIT Switch (§2-35): conmuta por el índice de la FIT que matchea.
+fn state_fit_switch(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
+    let index = terminal
+        .fits()
+        .values()
+        .position(|fit| fit_match(terminal).is_some_and(|matched| std::ptr::eq(matched, fit)));
+    match index {
+        Some(index) => match entry_state(&table.entries, index + 2) {
+            Some(next) => enter_state(terminal, next),
+            None => default_close(terminal),
+        },
+        None => vec![Action::Log(
+            "FIT switch: ninguna FIT coincide con la tarjeta".into(),
+        )]
+        .into_iter()
+        .chain(default_close(terminal))
+        .collect(),
+    }
+}
+
+/// B - PIN Entry (§2-8) con verificación remota (FIT PCKLN=0 del driver).
+fn state_pin_entry(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
+    let max_pin = fit_match(terminal)
+        .and_then(|fit| fit.entries.get(8).copied())
+        .map_or(16, usize::from)
+        .clamp(4, 16);
+    terminal.set_pending(Some(Pending::Pin { max: max_pin }));
+    // Enter = FDK A → remote pin check next state (entrada 8).
+    terminal.set_fdk_next(Fdk::A, entry_state(&table.entries, 8));
+    terminal.set_timeout_next(entry_state(&table.entries, 3));
+    terminal.set_cancel_next(entry_state(&table.entries, 4));
+    let mut actions = Vec::new();
+    if let Some(screen) = entry_screen(&table.entries, 2) {
+        actions.extend(terminal.set_screen(Some(screen)));
+    }
+    actions.push(Action::StartTimer {
+        timer: 0,
+        after: terminal.config().timer_duration(0),
+    });
+    actions
+}
+
+/// I - Transaction Request (§2-25): arma y envía el TRQ; luego espera reply.
+fn state_transaction_request(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
+    let mut actions = Vec::new();
+    if let Some(screen) = entry_screen(&table.entries, 2) {
+        actions.extend(terminal.set_screen(Some(screen)));
+    }
+    let send = |index: usize| entry(&table.entries, index) == Some("001");
+
+    let card = terminal.card().cloned().unwrap_or_default();
+    let track2 = send(4).then_some(card.track2).flatten();
+    let track1 = send(5).then_some(card.track1).flatten();
+    let track3 = send(5).then_some(card.track3).flatten();
+    let op_code = send(6).then(|| terminal.buffers().opcode.iter().collect::<String>());
+    let amount = send(7).then(|| terminal.buffers().amount.clone());
+    let pin_requested = matches!(entry(&table.entries, 8), Some("001" | "129"));
+    let buffer_a = pin_requested
+        .then(|| terminal.buffers().pin_block.clone())
+        .flatten();
+    let buffers = entry(&table.entries, 9).unwrap_or("000");
+    let buffer_b = matches!(buffers, "001" | "003").then(|| terminal.buffers().b.clone());
+    let buffer_c = matches!(buffers, "002" | "003").then(|| terminal.buffers().c.clone());
+
+    // Status data de la transacción anterior (opción 15, Tabla 9-1 q/r).
+    let status_data = if terminal.config().option(15) == Some(1) {
+        Some(match terminal.last_transaction() {
+            Some(last) => {
+                let notes: String = last
+                    .notes
+                    .iter()
+                    .map(|count| format!("{count:05}"))
+                    .collect();
+                format!("{:04}{}{}", last.serial, last.status, notes)
+            }
+            None => format!("0000{}", "0".repeat(21)),
+        })
+    } else {
+        None
+    };
+
+    let mcn = terminal.next_mcn();
+    let request = oxi_core::TransactionRequest {
+        luno: terminal.luno().clone(),
+        tvn: None,
+        top_of_receipt: '1',
+        mcn,
+        track2,
+        track3,
+        op_code,
+        amount,
+        buffer_a,
+        buffer_b,
+        buffer_c,
+        track1,
+        status_data,
+    };
+
+    // Pre-validación: un bug del motor no debe mandar un TRQ inválido.
+    if let Err(err) = request.to_bytes() {
+        actions.push(Action::Log(format!("TRQ inválido: {err}")));
+        return actions;
+    }
+
+    terminal.set_pending(Some(Pending::TransactionReply));
+    terminal.set_awaiting_reply(true);
+    terminal.set_pending_mcn(mcn.as_char());
+    terminal.set_timeout_next(entry_state(&table.entries, 3));
+    actions.push(Action::Send(oxi_core::TerminalMessage::TransactionRequest(
+        Box::new(request),
+    )));
+    actions.push(Action::StartTimer {
+        timer: 3,
+        after: terminal.config().timer_duration(3),
+    });
+    actions
 }
 
 /// Escribe en el buffer el valor de la FDK desde la extensión Z del estado X.
@@ -272,6 +432,7 @@ fn state_amount_entry(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Act
     if let Some(screen) = entry_screen(&table.entries, 2) {
         actions.extend(terminal.set_screen(Some(screen)));
     }
+    actions.push(start_timer(terminal, 0));
     actions
 }
 
@@ -289,6 +450,7 @@ fn state_info_entry(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Actio
     if let Some(screen) = entry_screen(&table.entries, 2) {
         actions.extend(terminal.set_screen(Some(screen)));
     }
+    actions.push(start_timer(terminal, 0));
     actions
 }
 
@@ -347,6 +509,7 @@ fn state_fdk_info(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action>
     if let Some(screen) = entry_screen(&table.entries, 2) {
         actions.extend(terminal.set_screen(Some(screen)));
     }
+    actions.push(start_timer(terminal, 0));
     actions
 }
 
@@ -365,15 +528,113 @@ fn state_eight_fdk(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action
     if let Some(screen) = entry_screen(&table.entries, 2) {
         actions.extend(terminal.set_screen(Some(screen)));
     }
+    actions.push(start_timer(terminal, 0));
     actions
 }
 
-/// Hook: timer del manual expirado (Time-Out State completo en T3.7).
+/// Hook: timer del manual expirado (Time-Out State §2-89, timers de §10-17).
 pub(crate) fn on_timer(terminal: &mut Terminal, timer: u8) -> Vec<Action> {
-    let _ = terminal;
-    vec![Action::Log(format!(
-        "timer {timer:02} expirado (Time-Out State: T3.7)"
-    ))]
+    match timer {
+        // Timer 00: entrada de teclado vencida → Time-Out State.
+        0 => enter_timeout_state(terminal),
+        // Timer 01: la pantalla C00 no recibió respuesta → salida time-out
+        // del estado original (FDK B).
+        1 => {
+            terminal.set_screen(None);
+            match terminal.timeout_next() {
+                Some(next) => enter_state(terminal, next),
+                None => default_close(terminal),
+            }
+        }
+        // Timer 03: sin Transaction Reply → salida time-out del estado I.
+        3 => {
+            terminal.set_awaiting_reply(false);
+            terminal.set_pending(None);
+            let mut actions = vec![Action::Log(
+                "timer 03: sin Transaction Reply; se aplica la salida time-out del estado I".into(),
+            )];
+            match terminal.timeout_next() {
+                Some(next) => actions.extend(enter_state(terminal, next)),
+                None => actions.extend(default_close(terminal)),
+            }
+            actions
+        }
+        // Timer 07: el efectivo no fue retirado → retract (v1: log), Ready y
+        // transición pendiente del reply.
+        7 => {
+            terminal.set_pending(None);
+            terminal.set_awaiting_reply(false);
+            let mut actions = vec![
+                Action::Log("timer 07: efectivo retraído (v1 sin hardware)".into()),
+                send_ready_after_reply(terminal),
+            ];
+            if let Some(next) = terminal.take_post_cash_next() {
+                actions.extend(enter_state(terminal, next));
+            }
+            actions
+        }
+        other => vec![Action::Log(format!(
+            "timer {other:02} sin manejador (fases posteriores)"
+        ))],
+    }
+}
+
+/// Inicia un timer con su duración configurada (Action).
+pub(crate) fn start_timer(terminal: &Terminal, timer: u8) -> Action {
+    Action::StartTimer {
+        timer,
+        after: terminal.config().timer_duration(timer),
+    }
+}
+
+/// Hook: el cardholder retiró el efectivo (cierra la espera del timer 07).
+pub(crate) fn on_cash_taken(terminal: &mut Terminal) -> Vec<Action> {
+    if terminal.pending() != Some(&Pending::Cash) {
+        return Vec::new();
+    }
+    terminal.set_pending(None);
+    terminal.set_awaiting_reply(false);
+    let mut actions = vec![
+        Action::CancelTimer(7),
+        Action::Log("efectivo retirado".into()),
+        send_ready_after_reply(terminal),
+    ];
+    if let Some(next) = terminal.take_post_cash_next() {
+        actions.extend(enter_state(terminal, next));
+    }
+    actions
+}
+
+/// Time-Out State fijo (§2-89): pantalla C00, timer 01, FDK A reintenta y
+/// FDK B sale por el time-out next state del estado original.
+fn enter_timeout_state(terminal: &mut Terminal) -> Vec<Action> {
+    terminal.set_retry_state(terminal.current_state());
+    let mut actions = terminal.set_screen(Some(ScreenSelector::Group {
+        letter: 'C',
+        digits: 0,
+    }));
+    actions.push(Action::StartTimer {
+        timer: 1,
+        after: terminal.config().timer_duration(1),
+    });
+    // FDK A = reintentar el estado; FDK B = salir por time-out (§2-89).
+    terminal.set_fdk_next(oxi_core::Fdk::A, terminal.retry_state());
+    terminal.set_fdk_next(oxi_core::Fdk::B, terminal.timeout_next());
+    actions.push(Action::Log("time-out state: pantalla C00".into()));
+    actions
+}
+
+/// Ready tras un Transaction Reply (descriptor 'B' si opción 1/001).
+pub(crate) fn send_ready_after_reply(terminal: &Terminal) -> Action {
+    Action::Send(oxi_core::TerminalMessage::SolicitedStatus {
+        luno: terminal.luno().clone(),
+        descriptor: if terminal.config().option(1) == Some(1) {
+            oxi_core::StatusDescriptor::ReadyAlternate
+        } else {
+            oxi_core::StatusDescriptor::Ready
+        },
+        data: Vec::new(),
+    })
 }
 
 /// W - FDK Switch (§2-58): conmuta según el keycode guardado en el buffer.

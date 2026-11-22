@@ -85,12 +85,8 @@ fn accept(terminal: &mut Terminal, message: HostMessage) -> Vec<Action> {
             actions.extend(apply_customisation(terminal, data));
             actions.push(ready_action(terminal, false));
         }
-        HostMessage::TransactionReply(_) => {
-            // La ejecución del reply llega en T3.5.
-            actions.push(send(terminal.command_reject()));
-            actions.push(Action::Log(
-                "Transaction Reply: ejecución llega en T3.5".into(),
-            ));
+        HostMessage::TransactionReply(reply) => {
+            actions.extend(execute_transaction_reply(terminal, reply));
         }
         HostMessage::InteractiveTransactionResponse(_) => {
             actions.push(send(terminal.command_reject()));
@@ -137,6 +133,93 @@ fn respond_info(terminal: &Terminal, message: &HostMessage) -> Vec<Action> {
         }
         _ => vec![send(terminal.command_reject())],
     }
+}
+
+/// Ejecuta el Transaction Reply (manual §10-58): valida MCN, imprime,
+/// dispensa, muestra pantalla y transiciona; Ready se difiere al retirar el
+/// efectivo cuando hay dispensado.
+fn execute_transaction_reply(
+    terminal: &mut Terminal,
+    reply: oxi_core::TransactionReply,
+) -> Vec<Action> {
+    let mut actions = Vec::new();
+    // MCN: '0' anula la verificación (manual §9-2). Si no coincide:
+    // specific reject B09 si la opción 12 está activa (§10-88), si no 'A'.
+    if let Some(mcn) = reply.mcn {
+        let expected = terminal.pending_mcn();
+        if mcn != '0' && Some(mcn) != expected {
+            actions.push(Action::Send(terminal.specific_command_reject("B09")));
+            actions.push(Action::Log(format!(
+                "MCN del reply '{mcn}' no coincide con el TRQ {expected:?}: reject"
+            )));
+            return actions;
+        }
+    }
+    terminal.set_awaiting_reply(false);
+    terminal.cancel_pending_mcn();
+    terminal.set_card_return(reply.card_return);
+
+    // Grupos de impresión (flag 1 journal, 2 receipt, 3 ambos; §10-58).
+    for group in reply.print_groups {
+        actions.push(Action::Print {
+            printer: group.flag,
+            data: group.data,
+        });
+    }
+
+    // Dispensado: Ready se envía cuando el cardholder retira (timer 07).
+    let mut ready_deferred = false;
+    if let Some(notes) = reply.notes {
+        let counts = notes.counts();
+        terminal.set_last_transaction(crate::terminal::LastTransaction {
+            serial: reply
+                .serial
+                .as_deref()
+                .and_then(|serial| serial.parse().ok())
+                .unwrap_or(0),
+            status: '1',
+            notes: counts,
+        });
+        if notes.total() > 0 {
+            terminal.set_pending(Some(crate::event::Pending::Cash));
+            actions.push(Action::Dispense(notes));
+            actions.push(crate::state_exec::start_timer(terminal, 7));
+            ready_deferred = true;
+        }
+    }
+
+    if let Some(screen) = reply.screen {
+        actions.extend(terminal.set_screen(Some(screen)));
+    }
+    if let Some(update) = &reply.screen_display_update {
+        actions.push(Action::Log(format!(
+            "actualización de pantalla del reply ignorada en v1: {update}"
+        )));
+    }
+
+    // Fin de la transacción (§10-58/§10-74): con dispensado pendiente, la
+    // transición y el Ready esperan al retiro del efectivo (timer 07).
+    actions.push(Action::CancelTimer(3));
+    if ready_deferred {
+        terminal.set_post_cash_next(Some(reply.next_state));
+        if let Some(function_id) = reply.function_id {
+            actions.push(Action::Log(format!(
+                "Transaction Reply: function '{function_id}' con dispensado; \
+                 next state {} diferido al retiro",
+                reply.next_state
+            )));
+        }
+    } else {
+        actions.push(Action::Send(terminal.ready(true)));
+        if let Some(function_id) = reply.function_id {
+            actions.push(Action::Log(format!(
+                "Transaction Reply: function '{function_id}' → estado {}",
+                reply.next_state
+            )));
+        }
+        actions.extend(crate::state_exec::enter_state(terminal, reply.next_state));
+    }
+    actions
 }
 
 /// Config ID como 4 dígitos (0000 = instalación, manual §10-33).
@@ -285,12 +368,21 @@ mod tests {
     }
 
     #[test]
-    fn customisation_in_power_up_should_be_ignored() {
+    fn customisation_after_power_on_should_be_accepted_in_out_of_service() {
         let mut terminal = Terminal::new();
         terminal.handle(Event::PoweredOn);
         let message = parse_line(b"3\x1c\x1c\x1c11\x1c000HOLA");
         let actions = terminal.handle(Event::HostMessage(message));
-        assert!(actions.is_empty(), "Tabla 10-38: Power-Up '–'");
+        assert!(
+            actions.iter().any(|a| matches!(
+                a,
+                Action::Send(oxi_core::TerminalMessage::SolicitedStatus {
+                    descriptor: oxi_core::StatusDescriptor::Ready,
+                    ..
+                })
+            )),
+            "tras el power-up el terminal queda fuera de servicio y acepta la descarga"
+        );
     }
 
     #[test]

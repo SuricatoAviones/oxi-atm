@@ -28,9 +28,10 @@ const DEFAULT_CLOSE_STATE: u16 = 200;
 /// Buffers de la transacción (manual §2-4: qué inicializa el estado A).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Buffers {
-    /// Dígitos de PIN capturados (en claro solo en memoria del simulador;
-    /// en el TRQ viaja encriptado, fase 7).
+    /// Dígitos de PIN capturados (en claro solo en memoria del simulador).
     pub pin: String,
+    /// Bloque de PIN formateado (ISO-0, 16 hex) listo para el TRQ.
+    pub pin_block: Option<String>,
     /// Buffer de propósito general B.
     pub b: String,
     /// Buffer de propósito general C.
@@ -47,6 +48,7 @@ impl Default for Buffers {
     fn default() -> Self {
         Self {
             pin: String::new(),
+            pin_block: None,
             b: String::new(),
             c: String::new(),
             amount: "00000000".into(),
@@ -61,6 +63,7 @@ impl Buffers {
     /// de propósito general vacíos, importe a ceros, op-code a espacios.
     pub(crate) fn reset_for_transaction(&mut self) {
         self.pin.clear();
+        self.pin_block = None;
         self.b.clear();
         self.c.clear();
         self.amount = "00000000".into();
@@ -140,8 +143,28 @@ pub struct Terminal {
     cancel_next: Option<StateNumber>,
     /// Bandera de tarjeta del último Transaction Reply (SPEC §4.3).
     card_return: Option<oxi_core::CardReturnFlag>,
+    /// MCN enviado en el último TRQ (para validar el reply, §9-2).
+    pending_mcn: Option<char>,
+    /// Estado al que volver si el cardholder reintenta tras el time-out.
+    retry_state: Option<StateNumber>,
+    /// Última transacción para el status data del TRQ (opción 15, §9-2 q/r).
+    last_transaction: Option<LastTransaction>,
+    /// Next state pendiente de completar el dispensado (function 2/8, §10-58:
+    /// la transición espera al retiro del efectivo o al timer 07).
+    post_cash_next: Option<StateNumber>,
     /// Guarda contra recursión del cierre por defecto (cadena J→000→…).
     closing: bool,
+}
+
+/// Resumen de la última transacción (Tabla 9-1 q/r).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LastTransaction {
+    /// Serial de 4 dígitos.
+    pub serial: u16,
+    /// '0' ninguna, '1' terminación buena, '2' error, '3' reply rechazado.
+    pub status: char,
+    /// Billetes dispensados por casete (4 × 5 dígitos).
+    pub notes: [u16; 4],
 }
 
 impl Default for Terminal {
@@ -172,6 +195,10 @@ impl Terminal {
             timeout_next: None,
             cancel_next: None,
             card_return: None,
+            pending_mcn: None,
+            retry_state: None,
+            last_transaction: None,
+            post_cash_next: None,
             closing: false,
         }
     }
@@ -226,26 +253,19 @@ impl Terminal {
                 self.card = None;
                 vec![Action::Log("tarjeta retirada por el cardholder".into())]
             }
-            Event::CashTaken => {
-                if self.pending == Some(Pending::Cash) {
-                    self.pending = None;
-                    vec![Action::CancelTimer(7)]
-                } else {
-                    Vec::new()
-                }
-            }
+            Event::CashTaken => crate::state_exec::on_cash_taken(self),
             Event::TimerFired(timer) => self.handle_timer(timer),
         }
     }
 
     fn handle_powered_on(&mut self) -> Vec<Action> {
-        self.mode = OperationalMode::PowerUp;
-        // Nota: el driver real del dueño no espera un power-up unsolicited
-        // (manda Go In-Service directo en la traza); el mensaje de power-up
-        // queda para la fase 6 cuando se valide contra el host.
+        // Tras el power-up el terminal queda fuera de servicio hasta que el
+        // host lo ponga en servicio (la columna Power-Up de las Tablas
+        // 10-38/40 es la ventana previa, sin respuestas).
+        self.mode = OperationalMode::OutOfService;
         vec![
-            Action::Log("power-up".into()),
-            Action::ModeChanged(OperationalMode::PowerUp),
+            Action::Log("power-up: terminal fuera de servicio".into()),
+            Action::ModeChanged(OperationalMode::OutOfService),
         ]
     }
 
@@ -357,6 +377,7 @@ impl Terminal {
         &mut self.states
     }
 
+    #[cfg(test)]
     pub(crate) fn screens(&self) -> &HashMap<ScreenSelector, ScreenDef> {
         &self.screens
     }
@@ -384,6 +405,10 @@ impl Terminal {
 
     pub(crate) fn set_pending(&mut self, pending: Option<Pending>) {
         self.pending = pending;
+    }
+
+    pub(crate) fn pending(&self) -> Option<&Pending> {
+        self.pending.as_ref()
     }
 
     pub(crate) fn set_current(&mut self, state: Option<StateNumber>) {
@@ -463,6 +488,22 @@ impl Terminal {
         self.timeout_next = next;
     }
 
+    pub(crate) fn timeout_next(&self) -> Option<StateNumber> {
+        self.timeout_next
+    }
+
+    /// Asigna (o borra) el next state de una FDK concreta.
+    pub(crate) fn set_fdk_next(&mut self, fdk: Fdk, next: Option<StateNumber>) {
+        match next {
+            Some(state) => {
+                self.fdk_next.insert(fdk.as_char(), state);
+            }
+            None => {
+                self.fdk_next.remove(&fdk.as_char());
+            }
+        }
+    }
+
     pub(crate) fn set_cancel_next(&mut self, next: Option<StateNumber>) {
         self.cancel_next = next;
     }
@@ -474,6 +515,25 @@ impl Terminal {
     /// Bandera de tarjeta del último Transaction Reply.
     pub(crate) fn card_return(&self) -> Option<oxi_core::CardReturnFlag> {
         self.card_return
+    }
+
+    /// Rechazo específico ('C') con código valor/calificador (§10-88); si la
+    /// opción 12 no está activa, cae a Command Reject ('A').
+    pub(crate) fn specific_command_reject(&self, code: &str) -> TerminalMessage {
+        if self.config.option(12) == Some(1) {
+            TerminalMessage::SolicitedStatus {
+                luno: self.config.luno.clone(),
+                descriptor: StatusDescriptor::SpecificCommandReject,
+                data: vec![code.to_owned()],
+            }
+        } else {
+            self.command_reject()
+        }
+    }
+
+    /// Limpia el MCN pendiente al cerrar la espera del reply.
+    pub(crate) fn cancel_pending_mcn(&mut self) {
+        self.pending_mcn = None;
     }
 
     pub(crate) fn set_card_return(&mut self, flag: Option<oxi_core::CardReturnFlag>) {
@@ -492,6 +552,40 @@ impl Terminal {
 
     pub(crate) fn set_closing(&mut self, closing: bool) {
         self.closing = closing;
+    }
+
+    pub(crate) fn set_pending_mcn(&mut self, mcn: char) {
+        self.pending_mcn = Some(mcn);
+    }
+
+    pub(crate) fn pending_mcn(&self) -> Option<char> {
+        self.pending_mcn
+    }
+
+    pub(crate) fn set_retry_state(&mut self, state: Option<StateNumber>) {
+        self.retry_state = state;
+    }
+
+    pub(crate) fn retry_state(&self) -> Option<StateNumber> {
+        self.retry_state
+    }
+
+    pub(crate) fn set_last_transaction(&mut self, last: LastTransaction) {
+        self.last_transaction = Some(last);
+    }
+
+    pub(crate) fn last_transaction(&self) -> Option<LastTransaction> {
+        self.last_transaction
+    }
+
+    /// Guarda el next state que se ejecutará al completar el dispensado.
+    pub(crate) fn set_post_cash_next(&mut self, next: Option<StateNumber>) {
+        self.post_cash_next = next;
+    }
+
+    /// Toma (y limpia) el next state pendiente del dispensado.
+    pub(crate) fn take_post_cash_next(&mut self) -> Option<StateNumber> {
+        self.post_cash_next.take()
     }
 
     /// Rota el MCN según el rango configurado (opción 34, §10-27).
@@ -732,13 +826,13 @@ mod tests {
     }
 
     #[test]
-    fn powered_on_should_set_power_up_mode() {
+    fn powered_on_should_go_out_of_service() {
         let mut terminal = Terminal::new();
         let actions = terminal.handle(Event::PoweredOn);
-        assert_eq!(terminal.mode(), OperationalMode::PowerUp);
+        assert_eq!(terminal.mode(), OperationalMode::OutOfService);
         assert!(actions
             .iter()
-            .any(|a| matches!(a, Action::ModeChanged(OperationalMode::PowerUp))));
+            .any(|a| matches!(a, Action::ModeChanged(OperationalMode::OutOfService))));
     }
 
     #[test]

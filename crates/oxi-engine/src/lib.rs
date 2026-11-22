@@ -4,17 +4,13 @@
 //! Sin tokio, sin red, sin reloj (ver `docs/DESIGN.md` §3). Depende solo de
 //! `oxi-core`.
 
-// TEMPORAL (T3.1-T3.3): helpers del intérprete que T3.4-T3.7 van a usar y
-// todavía no tienen llamador en el build no-test. Se ELIMINA al completar la
-// fase: cuando se quite, el compilador marcará cualquier helper que haya
-// quedado sin uso.
-#![allow(dead_code)]
-
+mod crypto;
 mod event;
 mod host_ops;
 mod state_exec;
 mod terminal;
 
+pub use crypto::{iso0_pin_block, CryptoError};
 pub use event::{Action, BufferId, Card, Event, Key, Pending};
 pub use terminal::{Buffers, Terminal};
 
