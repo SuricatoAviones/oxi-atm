@@ -89,6 +89,25 @@ pub(crate) fn on_card_inserted(terminal: &mut Terminal) -> Vec<Action> {
     }
     let entries = &table.entries;
     let card = terminal.card().cloned().unwrap_or_default();
+    // Fallas del lector: un atasco o error de lectura no produce lectura
+    // válida (device 'D', Tabla 9-30).
+    if terminal.hardware().reader.jammed || terminal.hardware().reader.read_error {
+        let mut actions = vec![Action::Log(
+            "lector con falla: la tarjeta no se pudo leer".into(),
+        )];
+        if let Some(error_screen) = entry_screen(entries, 4) {
+            actions.extend(terminal.set_screen(Some(error_screen)));
+        }
+        if !terminal.hardware().reader.jammed {
+            actions.push(Action::EjectCard);
+        }
+        if let Some(next) = entry_state(entries, 9) {
+            actions.extend(enter_state(terminal, next));
+        } else {
+            actions.extend(default_close(terminal));
+        }
+        return actions;
+    }
     // Condiciones de lectura en orden (§2-6): bit0 pista 3, bit1 pista 2,
     // bit2 pista 1, bit3 chip (sin soporte en v1).
     for condition_entry in [5usize, 6, 7] {
@@ -307,6 +326,7 @@ fn state_transaction_request(terminal: &mut Terminal, table: &StateTableDef) -> 
     terminal.set_awaiting_reply(true);
     terminal.set_pending_mcn(mcn.as_char());
     terminal.set_timeout_next(entry_state(&table.entries, 3));
+    terminal.count_attempt();
     actions.push(Action::Send(oxi_core::TerminalMessage::TransactionRequest(
         Box::new(request),
     )));
@@ -473,7 +493,14 @@ fn state_close(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
                 actions.push(Action::Log("tarjeta retenida por política del host".into()));
                 terminal.take_card();
             }
-            _ => actions.push(Action::EjectCard),
+            _ => {
+                // Tarjeta presentada: espera de retiro con timer 09 (§2-30;
+                // si no la retira, se captura al vencer).
+                terminal.hardware_mut().reader.state =
+                    Some(crate::hardware::ReaderState::Presented);
+                actions.push(Action::EjectCard);
+                actions.push(start_timer(terminal, 9));
+            }
         }
     }
     match entry_state(&table.entries, 3) {
@@ -564,14 +591,45 @@ pub(crate) fn on_timer(terminal: &mut Terminal, timer: u8) -> Vec<Action> {
         7 => {
             terminal.set_pending(None);
             terminal.set_awaiting_reply(false);
-            let mut actions = vec![
-                Action::Log("timer 07: efectivo retraído (v1 sin hardware)".into()),
-                send_ready_after_reply(terminal),
-            ];
+            let last = terminal
+                .last_transaction()
+                .map(|last| last.notes)
+                .unwrap_or_default();
+            let outcome = terminal.hardware_mut().dispenser.retract(last);
+            let condition = crate::hardware::DeviceCondition {
+                device: 'E',
+                status: crate::hardware::Dispenser::status_field(outcome, [0; 4]),
+                severity: '2',
+                diagnostic: String::new(),
+                supplies: Some(terminal.hardware().dispenser.notes_in_cassettes()),
+            };
+            let mut actions = vec![Action::Log(
+                "timer 07: efectivo retraído a la caja de retract".into(),
+            )];
+            actions.extend(terminal.set_screen(None));
+            actions.push(Action::Send(terminal.unsolicited(condition)));
+            actions.push(send_ready_after_reply(terminal));
             if let Some(next) = terminal.take_post_cash_next() {
                 actions.extend(enter_state(terminal, next));
             }
             actions
+        }
+        // Timer 09: la tarjeta presentada no fue retirada → captura (§2-30).
+        9 => {
+            terminal.hardware_mut().reader.captures += 1;
+            terminal.hardware_mut().reader.state = Some(crate::hardware::ReaderState::Captured);
+            terminal.take_card();
+            let condition = crate::hardware::DeviceCondition {
+                device: 'D',
+                status: "1".into(),
+                severity: '2',
+                diagnostic: String::new(),
+                supplies: None,
+            };
+            vec![
+                Action::Log("timer 09: tarjeta capturada por no ser retirada".into()),
+                Action::Send(terminal.unsolicited(condition)),
+            ]
         }
         other => vec![Action::Log(format!(
             "timer {other:02} sin manejador (fases posteriores)"
