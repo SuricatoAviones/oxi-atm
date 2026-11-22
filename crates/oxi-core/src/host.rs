@@ -7,6 +7,7 @@
 
 use crate::command::TerminalCommand;
 use crate::customisation::CustomisationData;
+use crate::reply::TransactionReply;
 use crate::wire::RawFields;
 use crate::ParseError;
 
@@ -26,6 +27,8 @@ pub enum HostMessage {
     TerminalCommand(TerminalCommand),
     /// Clase 3 sub-clase 1: customización (pantallas, estados, FITs, etc.).
     Customisation(CustomisationData),
+    /// Clase 4: Transaction Reply (manual §10-58).
+    TransactionReply(TransactionReply),
     /// Clase no modelada o código/identificador no reconocido. El mensaje
     /// crudo queda preservado para diagnóstico y para la política de rechazo
     /// del motor (manual §10-87, §10-95).
@@ -68,7 +71,9 @@ pub fn parse_host(raw: &RawFields, options: &ParseOptions) -> Result<HostMessage
                 _ => Ok(HostMessage::Unknown { raw: raw.clone() }),
             }
         }
-        // Clase 4 (Transaction Reply) llega en T1.5; 6 (EJ) y 8 (EMV) después.
+        // Clase 4: Transaction Reply (§10-58).
+        '4' => Ok(HostMessage::TransactionReply(TransactionReply::parse(raw)?)),
+        // Clase 6 (EJ) y 8 (EMV) se incorporan cuando sus fases lo pidan.
         _ => Ok(HostMessage::Unknown { raw: raw.clone() }),
     }
 }
@@ -89,7 +94,7 @@ mod tests {
 
     #[test]
     fn unknown_class_should_be_preserved() {
-        let raw = RawFields::parse(b"4\x1c\x1c\x1c080");
+        let raw = RawFields::parse(b"9\x1c\x1c\x1c080");
         let msg = parse_host(&raw, &ParseOptions::default()).expect("mensaje válido");
         assert_eq!(msg, HostMessage::Unknown { raw });
     }

@@ -124,6 +124,12 @@ fn describe(msg: &HostMessage) -> String {
             };
             format!("Customisation::{name} [{desc}]")
         }
+        HostMessage::TransactionReply(tr) => {
+            format!(
+                "TransactionReply(next={} fn={:?} notas={:?} pantalla={:?} mcn={:?})",
+                tr.next_state, tr.function_id, tr.notes, tr.screen, tr.mcn
+            )
+        }
         HostMessage::Unknown { .. } => "Unknown (preservado; el motor decide reject)".to_owned(),
     }
 }
