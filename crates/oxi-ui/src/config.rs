@@ -11,6 +11,38 @@ pub struct SimConfig {
     /// Tarjetas de prueba que la CLI puede insertar.
     #[serde(default)]
     pub cards: Vec<CardProfile>,
+    /// Claves de PRUEBA del simulador (fase 7). Opcional.
+    #[serde(default)]
+    pub security: SecurityConfigToml,
+}
+
+/// Claves de prueba (sintéticas) para PIN y cambios de clave.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SecurityConfigToml {
+    /// Clave de trabajo del PIN (16 hex single / 32 hex triple).
+    pub pin_key: Option<String>,
+    /// "single" (default) o "triple".
+    pub pin_key_mode: Option<String>,
+    /// Clave maestra 'A' (16 hex).
+    pub master_key: Option<String>,
+    /// Clave local 'B' (16 hex).
+    pub local_b_key: Option<String>,
+}
+
+impl SecurityConfigToml {
+    /// Convierte al tipo del engine.
+    pub fn to_engine(&self) -> oxi_engine::SecurityConfig {
+        let mode = match self.pin_key_mode.as_deref() {
+            Some("triple") => oxi_engine::KeyMode::Triple,
+            _ => oxi_engine::KeyMode::Single,
+        };
+        oxi_engine::SecurityConfig {
+            pin_key: self.pin_key.clone(),
+            pin_key_mode: mode,
+            master_key: self.master_key.clone(),
+            local_b_key: self.local_b_key.clone(),
+        }
+    }
 }
 
 /// Parámetros de red (SPEC §1).
@@ -51,6 +83,7 @@ impl Default for SimConfig {
                 name: "test".into(),
                 track2: ";5899410000000000=2512?".into(),
             }],
+            security: SecurityConfigToml::default(),
         }
     }
 }

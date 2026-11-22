@@ -9,6 +9,7 @@ license.workspace = true
 # I/O, sin interfaz. Solo conoce al core (tipos del protocolo).
 [dependencies]
 oxi-core = { path = "../oxi-core" }
+des.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

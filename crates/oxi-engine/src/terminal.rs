@@ -14,6 +14,7 @@ use oxi_core::{
     TerminalMessage,
 };
 
+use crate::crypto::{CryptoError, SecurityConfig};
 use crate::event::{Action, BufferId, Card, Event, Key, Pending};
 use crate::hardware::{DeviceCondition, Fault, Hardware};
 
@@ -157,6 +158,8 @@ pub struct Terminal {
     hardware: Hardware,
     /// Intentos de transacción detectados (campo g3 de Tabla 9-8).
     attempts: u32,
+    /// Configuración de seguridad (claves de PRUEBA, fase 7).
+    security: SecurityConfig,
     /// Guarda contra recursión del cierre por defecto (cadena J→000→…).
     closing: bool,
 }
@@ -206,6 +209,7 @@ impl Terminal {
             post_cash_next: None,
             hardware: Hardware::default(),
             attempts: 0,
+            security: SecurityConfig::default(),
             closing: false,
         }
     }
@@ -610,6 +614,40 @@ impl Terminal {
 
     pub(crate) fn hardware_mut(&mut self) -> &mut Hardware {
         &mut self.hardware
+    }
+
+    /// Configuración de seguridad (claves de prueba del perfil).
+    pub fn security(&self) -> &SecurityConfig {
+        &self.security
+    }
+
+    /// Acceso mutable a la seguridad (cambio de claves en runtime).
+    pub(crate) fn security_mut(&mut self) -> &mut SecurityConfig {
+        &mut self.security
+    }
+
+    /// Aplica la configuración de seguridad del perfil (fase 7).
+    pub fn configure_security(&mut self, security: SecurityConfig) {
+        self.security = security;
+    }
+
+    /// Forma el PIN block ISO-0 y lo cifra si hay clave configurada.
+    /// Devuelve el bloque listo para el TRQ o el error de formación.
+    pub(crate) fn build_pin_block(&self, pin: &str, pan: &str) -> Result<String, CryptoError> {
+        let iso0 = crate::crypto::iso0_pin_block(pin, pan)?;
+        match self.security.working_pin_key() {
+            None => Ok(iso0),
+            Some(Err(err)) => Err(err),
+            Some(Ok(key)) => {
+                crate::crypto::encrypt_pin_block(&iso0, &key, self.security.pin_key_mode)
+            }
+        }
+    }
+
+    /// KVV de la clave de trabajo actual (6 hex, §11-18), si hay clave.
+    pub fn pin_kvv(&self) -> Option<Result<String, CryptoError>> {
+        let key = self.security.working_pin_key()?;
+        Some(key.and_then(|key| crate::crypto::kvv(&key, self.security.pin_key_mode)))
     }
 
     /// Cuenta un intento de transacción (campo g3 de la Tabla 9-8).

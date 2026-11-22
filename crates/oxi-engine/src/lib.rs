@@ -11,7 +11,10 @@ mod host_ops;
 mod state_exec;
 mod terminal;
 
-pub use crypto::{iso0_pin_block, CryptoError};
+pub use crypto::{
+    decode_decimal_key, decrypt_pin_block, encrypt_block, encrypt_pin_block, iso0_pin_block, kvv,
+    CryptoError, KeyMode, SecurityConfig,
+};
 pub use event::{Action, BufferId, Card, Event, Key, Pending};
 pub use hardware::{
     Cassette, DeviceCondition, DispenseOutcome, Dispenser, Fault, Hardware, PaperState, Printer,

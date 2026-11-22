@@ -5,6 +5,7 @@
 
 use oxi_core::{Disposition, HostMessage, ModeContext, StateNumber, TerminalCommand};
 
+use crate::crypto::{CryptoError, KeyMode};
 use crate::event::Action;
 use crate::state_exec::enter_state;
 use crate::terminal::{apply_customisation, ready_action, send, Terminal};
@@ -31,10 +32,16 @@ pub(crate) fn handle_host(terminal: &mut Terminal, message: HostMessage) -> Vec<
             )]
         }
         Disposition::AcceptOnlyIfNoTransaction => {
-            vec![
-                send(terminal.command_reject()),
-                Action::Log("cambio de claves: no soportado en v1 (fase 7)".into()),
-            ]
+            // Cambios de clave: se aceptan solo sin transacción en curso
+            // (Tabla 10-38 'A3'); se aplican si son del tipo soportado.
+            if terminal.awaiting_reply() {
+                vec![
+                    send(terminal.command_reject()),
+                    Action::Log("cambio de claves durante una transacción: reject".into()),
+                ]
+            } else {
+                accept(terminal, message)
+            }
         }
         Disposition::AcceptIfTranReqElseReject => vec![
             send(terminal.command_reject()),
@@ -92,10 +99,14 @@ fn accept(terminal: &mut Terminal, message: HostMessage) -> Vec<Action> {
             actions.push(send(terminal.command_reject()));
             actions.push(Action::Log("ITR: fase 8".into()));
         }
-        HostMessage::EncryptionKeyChange { .. }
-        | HostMessage::ExtendedEncryptionKeyChange { .. } => {
+        HostMessage::EncryptionKeyChange { .. } => {
             actions.push(send(terminal.command_reject()));
-            actions.push(Action::Log("cambio de claves: fase 7".into()));
+            actions.push(Action::Log(
+                "Encryption Key Change (sub-clase 3, sin EPP): reject".into(),
+            ));
+        }
+        HostMessage::ExtendedEncryptionKeyChange { raw } => {
+            actions.extend(apply_extended_key_change(terminal, &raw));
         }
         HostMessage::Unknown { .. } => {
             actions.push(send(terminal.command_reject()));
@@ -298,6 +309,84 @@ fn execute_transaction_reply(
             )));
         }
         actions.extend(crate::state_exec::enter_state(terminal, reply.next_state));
+    }
+    actions
+}
+
+/// Ejecuta el Extended Encryption Key Change (Tabla 10-12): modificador +
+/// tamaño en hex + datos decimales. v1 soporta claves simples (§10-45:
+/// tamaño `018` = 24 chars = 8 bytes); doble longitud queda documentado.
+fn apply_extended_key_change(terminal: &mut Terminal, raw: &oxi_core::RawFields) -> Vec<Action> {
+    let mut actions = Vec::new();
+    let Ok(head) = raw.ascii_field(3) else {
+        return vec![send(terminal.command_reject())];
+    };
+    let modifier = head.chars().nth(1).unwrap_or('?');
+    let size = raw.ascii_field(4).unwrap_or_default();
+    let data = raw.ascii_field(5).unwrap_or_default();
+    match modifier {
+        // '2': nueva clave de comunicaciones, descifrada con la master.
+        '2' => {
+            if size != "018" {
+                actions.push(send(terminal.command_reject()));
+                actions.push(Action::Log(format!(
+                    "EKC: tamaño '{size}' no soportado en v1 (solo 018, single)"
+                )));
+                return actions;
+            }
+            let Some(master) = terminal.security().master_key_bytes() else {
+                actions.push(send(terminal.command_reject()));
+                actions.push(Action::Log("EKC sin clave master configurada".into()));
+                return actions;
+            };
+            let result = master.and_then(|master| {
+                let encrypted = crate::crypto::decode_decimal_key(data)?;
+                let block: [u8; 8] = encrypted
+                    .try_into()
+                    .map_err(|_| CryptoError::InvalidKey("la clave debe ser de 8 bytes".into()))?;
+                let decrypted = crate::crypto::decrypt_block(&master, block, KeyMode::Single)?;
+                Ok(decrypted)
+            });
+            match result {
+                Ok(new_key) => {
+                    let hex: String = new_key.iter().map(|byte| format!("{byte:02X}")).collect();
+                    terminal.security_mut().pin_key = Some(hex);
+                    terminal.security_mut().pin_key_mode = KeyMode::Single;
+                    actions.push(send(terminal.ready(false)));
+                    actions.push(Action::Log(format!(
+                        "EKC: nueva clave de comunicaciones cargada (KVV {})",
+                        terminal
+                            .pin_kvv()
+                            .and_then(|kvv| kvv.ok())
+                            .unwrap_or_else(|| "??????".into())
+                    )));
+                }
+                Err(err) => {
+                    actions.push(send(terminal.command_reject()));
+                    actions.push(Action::Log(format!("EKC rechazado: {err}")));
+                }
+            }
+        }
+        // '4': usar la clave local 'B' como clave de comunicaciones.
+        '4' => match terminal.security().local_b_key_bytes() {
+            Some(Ok(key)) => {
+                let hex: String = key.iter().map(|byte| format!("{byte:02X}")).collect();
+                terminal.security_mut().pin_key = Some(hex);
+                terminal.security_mut().pin_key_mode = KeyMode::Single;
+                actions.push(send(terminal.ready(false)));
+                actions.push(Action::Log("EKC: clave local B activada".into()));
+            }
+            _ => {
+                actions.push(send(terminal.command_reject()));
+                actions.push(Action::Log("EKC: sin clave local B configurada".into()));
+            }
+        },
+        other => {
+            actions.push(send(terminal.command_reject()));
+            actions.push(Action::Log(format!(
+                "EKC modificador '{other}' no soportado en v1 (EPP/EID en fase posterior)"
+            )));
+        }
     }
     actions
 }
