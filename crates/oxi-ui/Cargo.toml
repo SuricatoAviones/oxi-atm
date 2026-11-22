@@ -1,0 +1,14 @@
+[package]
+name = "oxi-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Dependencias previstas (se agregan en la fase que las usa):
+# - fase 6 (ensamblado/CLI): oxi-engine, oxi-net (path), tokio, serde,
+#   anyhow, tracing, tracing-subscriber
+[dependencies]
+
+[lints]
+workspace = true
