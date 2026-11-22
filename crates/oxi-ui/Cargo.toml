@@ -2,11 +2,17 @@
 name = "oxi-ui"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# La CLI compila con 1.85, pero el binario GUI (feature `gui`) usa eframe 0.37,
+# que exige 1.95. El MSRV del crate queda en el mayor de sus targets.
+rust-version = "1.95"
 license.workspace = true
 
-# Fase 6 (ensamblado): el único crate que toca todo. La GUI llega después
-# del núcleo (fase 9); aquí va el runtime glue + CLI.
+# Fase 6 (ensamblado): el único crate que toca todo. La GUI (fase 9) es un
+# binario opcional con `eframe`; la CLI sigue siendo la interfaz de referencia.
+[features]
+default = []
+gui = ["dep:eframe"]
+
 [dependencies]
 oxi-core = { path = "../oxi-core" }
 oxi-engine = { path = "../oxi-engine" }
@@ -17,6 +23,23 @@ tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "signal"] }
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# egui/eframe: MIT OR Apache-2.0. Backend glow (OpenGL) para no arrastrar
+# wgpu/Vulkan; corre bajo WSLg con Mesa y en Windows nativo.
+eframe = { version = "0.37", optional = true, default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
+
+[[bin]]
+name = "oxi-ui"
+path = "src/main.rs"
+
+[[bin]]
+name = "oxi-gui"
+path = "src/bin/oxi-gui.rs"
+required-features = ["gui"]
 
 [dev-dependencies]
 oxi-host-mock = { path = "../oxi-host-mock" }

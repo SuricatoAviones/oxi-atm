@@ -3,9 +3,10 @@
 Simulador de cajeros **NDC** (APTRA Advance NDC) escrito en Rust, pensado para
 probar hosts y drivers de ATM sin necesidad de un cajero físico.
 
-> Proyecto en desarrollo activo. Estado actual: **fases 0–7 del ROADMAP
+> Proyecto en desarrollo activo. Estado actual: **fases 0–7 y 9 del ROADMAP
 > completadas** (parser, red, máquina de estados, hardware virtual, host de
-> pruebas, CLI y seguridad de PIN). Ver [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> pruebas, CLI, seguridad de PIN y GUI). La fase 8 (refinos de protocolo) es
+> opcional y queda pendiente. Ver [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -29,29 +30,52 @@ probar hosts y drivers de ATM sin necesidad de un cajero físico.
   con rejects genéricos y específicos, y Time-Out State.
 
 **No es** un HSM ni un cajero real: no hay EPP, ni RSA, ni validación local de
-PIN (documentado como opción futura), ni interfaz gráfica (llega después del
-núcleo).
+PIN (documentado como opción futura). La GUI de escritorio es una herramienta
+de simulación, no un cajero certificado.
 
 ---
 
 ## Requisitos
 
-- Rust estable (1.85+). En Windows se recomienda compilar/ejecutar desde
-  **WSL** si Smart App Control bloquea binarios recién compilados (ver
-  [Problemas comunes](#problemas-comunes)).
+- Rust estable. Núcleo y CLI: 1.85+. **GUI: 1.95+** (eframe 0.37). En Windows
+  se recomienda compilar/ejecutar desde **WSL** si Smart App Control bloquea
+  binarios recién compilados (ver [Problemas comunes](#problemas-comunes)).
+- La GUI bajo WSL necesita **WSLg** y las librerías de Mesa/Wayland/X11
+  (comando de instalación en [Interfaz gráfica](#interfaz-gráfica-opcional)).
 - No requiere base de datos ni servicios externos.
 
 ---
 
 ## Inicio rápido: demo local
 
-Se necesitan **dos terminales**: el host falso y el cajero.
+### GUI (para ver el cajero)
+
+Se necesitan **dos terminales**:
 
 ```text
 # Terminal 1 — host falso (baja la customización y aprueba transacciones)
 cargo run -p oxi-host-mock -- --listen 127.0.0.1:9000
 
-# Terminal 2 — el ATM
+# Terminal 2 — GUI (la primera compilación de eframe tarda unos minutos)
+cargo run -p oxi-ui --features gui --bin oxi-gui
+```
+
+En la ventana: **Insertar tarjeta** (o `Ctrl+I`) → tecleá `1234` + Enter →
+tecleá `100` + Enter → cuando aparezca el efectivo, **Retirar efectivo** (o
+`Ctrl+E`). La pantalla, el modo, la conexión y el registro se actualizan en
+vivo.
+
+> El mock espera 30 minutos de silencio antes de cerrar la sesión; se ajusta
+> con `--idle <segundos>`. Si la sesión se cerró, la GUI muestra
+> **Reconectar** (`Ctrl+R`) y vuelve a bajar la customización.
+
+### CLI
+
+```text
+# Terminal 1 — host falso
+cargo run -p oxi-host-mock -- --listen 127.0.0.1:9000
+
+# Terminal 2 — el ATM en texto
 cargo run -p oxi-ui
 ```
 
@@ -100,7 +124,11 @@ master_key = "A1B2C3D4E5F60718"  # para cambios de clave EKC
 2. Arrancá tu host y después:
 
 ```text
+# CLI
 cargo run -p oxi-ui -- --config perfil.toml
+
+# o la GUI (mismo perfil)
+cargo run -p oxi-ui --features gui --bin oxi-gui -- --config perfil.toml
 ```
 
 3. El flujo esperado: oxi conecta → tu host manda sus comandos y su descarga →
@@ -135,6 +163,46 @@ defina tu state table.
 
 ---
 
+## Interfaz gráfica (opcional)
+
+La GUI es un binario aparte de `oxi-ui` (feature `gui`) construido con
+[`egui/eframe`](https://github.com/emilk/egui). Comparte el runtime, el perfil
+TOML y el motor con la CLI; no la reemplaza ni la compila si no se pide.
+
+![Ventana de oxi con la pantalla BIENVENIDO y el registro](docs/gui.png)
+
+### Requisitos en WSL (WSLg)
+
+Además de WSLg, la distro necesita Mesa y las librerías de Wayland/X11:
+
+```bash
+sudo apt install libgl1 libegl1 libgl1-mesa-dri libgles2 \
+  libwayland-client0 libwayland-cursor0 libwayland-egl1 libxkbcommon0 \
+  libx11-6 libxcursor1 libxrandr2 libxi6 libfontconfig1 mesa-utils
+```
+
+Verificá con `glxinfo -B`; si el render es por `llvmpipe` funciona igual
+(render por CPU), sólo es más lento que una GPU.
+
+### Atajos de la ventana
+
+| Acción | Mouse | Teclado |
+|---|---|---|
+| Insertar tarjeta | selector + **Insertar tarjeta** | `Ctrl+I` |
+| Dígitos | teclado numérico | `0`–`9` |
+| Enter | **ENTER** | `Enter` |
+| Clear | **CLR** | `Backspace` |
+| Cancel | **CAN** | `Esc` |
+| FDK A–I | botones laterales | `F1`–`F9` |
+| Retirar efectivo | **Retirar efectivo** | `Ctrl+E` |
+| Reconectar | **Reconectar** (sesión cerrada) | `Ctrl+R` |
+
+La barra superior muestra la conexión y el modo operativo; el panel derecho
+concentra el registro (rechazos, prints, dispensados, transiciones). La GUI
+usa `RUST_LOG=oxi_net=trace` igual que la CLI para volcar frames crudos.
+
+---
+
 ## Comandos de la CLI
 
 | Comando | Efecto |
@@ -158,7 +226,7 @@ defina tu state table.
 | `oxi-engine` | Máquina de estados, customización, hardware virtual, PIN (sin tokio) |
 | `oxi-net` | TCP, encuadre 2B-BE, reconexión (tokio) |
 | `oxi-host-mock` | Host falso guionizado + fixtures sintéticas canónicas |
-| `oxi-ui` | Ensamblado (runtime + CLI) |
+| `oxi-ui` | Ensamblado (runtime + CLI + GUI opcional con `--features gui`) |
 
 Documentación de diseño: [`docs/SPEC.md`](docs/SPEC.md) (protocolo),
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
@@ -182,6 +250,9 @@ En Windows con WSL (recomendado si Smart App Control bloquea los binarios):
 wsl -e bash /mnt/c/.../oxi-atm/scripts/check-wsl.sh
 ```
 
+`clippy --all-features` compila también la GUI (eframe); es la verificación
+completa. `cargo test` sin features no arrastra las dependencias gráficas.
+
 Los tests usan únicamente **datos sintéticos** construidos por el proyecto
 (fixtures de `oxi-host-mock`); no se versionan datos reales de ninguna empresa.
 
@@ -190,6 +261,8 @@ Los tests usan únicamente **datos sintéticos** construidos por el proyecto
 | Síntoma | Causa probable / solución |
 |---|---|
 | `os error 4551` al ejecutar tests o binarios | Smart App Control de Windows bloquea binarios sin firma. Compilá/ejecutá desde WSL, o desactivá Smart App Control (decisión del usuario: es unidireccional). |
+| La GUI no abre o falla al crear el contexto | Faltan Mesa/Wayland/X11 en WSL. Instalá el paquete de [Interfaz gráfica](#interfaz-gráfica-opcional) y verificá con `glxinfo -B`. |
+| El mock cierra la sesión si no pasa nada | Su silencio máximo es 30 min. Ajustalo con `--idle <segundos>` (por ejemplo `--idle 7200`). |
 | El host no logra conectar o no llega nada | oxi **conecta hacia** el host (rol cliente TCP). Verificá IP/puerto del perfil y que el host esté escuchando. |
 | `command reject` en la descarga | Orden: la customización se acepta en Out-of-Service (revisá el modo del terminal). |
 | `C/B08` al bajar fecha/hora | El host manda 14 caracteres; el manual exige 10 (`YYMMDDHHMM`). |

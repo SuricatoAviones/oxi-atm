@@ -30,6 +30,13 @@ pub enum UiUpdate {
     Mode(OperationalMode),
     /// Cambio de estado de la conexión.
     Connection(ConnectionState),
+    /// Efectivo dispensado pendiente de retiro (para el botón de la GUI).
+    CashReady {
+        /// Billetes por casete.
+        counts: [u16; 4],
+    },
+    /// La sesión de red terminó (fallo de conexión o enlace cerrado).
+    SessionEnded,
 }
 
 /// Handle de una sesión de oxi en ejecución.
@@ -44,6 +51,12 @@ impl RuntimeHandle {
     /// Inyecta un evento (tecla, tarjeta, etc.). `false` = runtime cerrado.
     pub async fn send(&self, event: Event) -> bool {
         self.events.send(event).await.is_ok()
+    }
+
+    /// Variante sin bloqueo para interfaces sincrónicas como egui.
+    /// `false` = canal lleno o runtime cerrado (el evento se descarta).
+    pub fn try_send(&self, event: Event) -> bool {
+        self.events.try_send(event).is_ok()
     }
 
     /// Corta la sesión (red + motor).
@@ -89,6 +102,7 @@ pub fn spawn(config: &SimConfig) -> RuntimeHandle {
                 let _ = net_updates
                     .send(UiUpdate::Log(format!("conexión fallida: {err}")))
                     .await;
+                let _ = net_updates.send(UiUpdate::SessionEnded).await;
                 watcher.abort();
                 return;
             }
@@ -105,6 +119,7 @@ pub fn spawn(config: &SimConfig) -> RuntimeHandle {
                     .await;
             }
         }
+        let _ = net_updates.send(UiUpdate::SessionEnded).await;
         watcher.abort();
     });
 
@@ -235,12 +250,12 @@ async fn dispatch(
                     .await;
             }
             Action::Dispense(notes) => {
+                let counts = notes.counts();
                 let _ = updates
-                    .send(UiUpdate::Log(format!(
-                        "dispensando {:?} billetes",
-                        notes.counts()
-                    )))
+                    .send(UiUpdate::Log(format!("dispensando {counts:?} billetes")))
                     .await;
+                // Evento tipado para que la GUI habilite "Retirar efectivo".
+                let _ = updates.send(UiUpdate::CashReady { counts }).await;
             }
         }
     }
