@@ -4,11 +4,15 @@
 //! enums, split por FS/GS y roundtrips verificados. No depende de tokio, I/O ni
 //! interfaz (ver `docs/ARCHITECTURE.md` §2).
 
+mod command;
 mod error;
+mod host;
 mod types;
 mod wire;
 
+pub use command::TerminalCommand;
 pub use error::ParseError;
+pub use host::{parse_host, HostMessage, ParseOptions};
 pub use types::{
     CardReturnFlag, Fdk, FdkMask, Luno, Mcn, NoteCounts, PrintGroup, PrinterFlag, ScreenId,
     StateNumber, STATE_DISABLED,
