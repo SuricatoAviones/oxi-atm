@@ -9,7 +9,9 @@ mod customisation;
 mod error;
 mod host;
 mod modes;
+mod parse_terminal;
 mod reply;
+mod serialize;
 mod terminal;
 mod types;
 mod wire;
@@ -22,6 +24,7 @@ pub use customisation::{
 pub use error::ParseError;
 pub use host::{parse_host, HostMessage, ParseOptions};
 pub use modes::{disposition, Disposition, ModeContext, OperationalMode};
+pub use parse_terminal::parse_terminal;
 pub use reply::{InteractiveTransactionResponse, TransactionReply};
 pub use terminal::{StatusDescriptor, TerminalMessage, TransactionRequest};
 pub use types::{

@@ -14,7 +14,10 @@ fn full_transaction_should_complete_from_events_only() {
 
     // Contenido del TRQ según la Tabla 9-1 y las opciones activas.
     assert_eq!(request.luno.as_str(), "001");
-    assert_eq!(request.track2.as_deref(), Some("5899410000000000=2512"));
+    assert_eq!(
+        request.track2.as_deref(),
+        Some(oxi_host_mock::test_card().as_str())
+    );
     assert_eq!(request.amount.as_deref(), Some("00000100"));
     assert_eq!(request.op_code.as_deref(), Some("        "));
     assert_eq!(

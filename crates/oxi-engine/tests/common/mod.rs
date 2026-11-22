@@ -1,7 +1,8 @@
-//! Fixture compartida por los tests de integración del engine (sintética).
+//! Fixture compartida por los tests de integración del engine.
 //!
-//! Cada binario de integración incluye TODO este módulo y usa solo una parte:
-//! el `allow(dead_code)` es el patrón estándar para `tests/common`.
+//! La customización viene del builder canónico de `oxi-host-mock` (T5.1):
+//! este módulo solo la serializa y la pasa por el parser real del engine,
+//! así los tests siguen ejercitando `parse_host`.
 #![allow(dead_code)]
 
 use oxi_core::{parse_host, ParseOptions, RawFields, TerminalMessage};
@@ -13,30 +14,12 @@ pub fn load(terminal: &mut Terminal, line: &[u8]) {
     let _ = terminal.handle(Event::HostMessage(message));
 }
 
-/// Customización sintética: pantallas, estados A/K/B/F/I/J, FIT comodín y
-/// ECPL con LUNO 001 + opciones 12 (specific reject) y 15 (status data).
+/// Carga la customización canónica (pantallas/estados/FIT/ECPL/Config ID).
 pub fn load_customisation(terminal: &mut Terminal) {
-    let screens: &[u8] =
-        b"3\x1c\x1c\x1c11\x1c010\x0cBIENVENIDO\x1c020\x0cIMPORTE\x1c028\x0cPIN\x1c052\x0cRECIBO";
-    load(terminal, screens);
-
-    let states: &[u8] = b"3\x1c\x1c\x1c12\x1c\
-000A010001001002002002000001\x1c\
-001K002002002002002002002002\x1c\
-002B028200201010213032003003\x1c\
-003F020200200004255255255020\x1c\
-004I023203001000001001001000\x1c\
-005J052000052052052052052\x1c\
-200J052255052052052052052\x1c\
-201J052255052052052052052\x1c\
-203J052255052052052052052";
-    load(terminal, states);
-
-    let fit_data = format!("001000{}{}", "255".repeat(5), "000".repeat(34));
-    let fit_line = format!("3\x1c\x1c\x1c15\x1c{fit_data}");
-    load(terminal, fit_line.as_bytes());
-
-    load(terminal, b"3\x1c\x1c\x1c1A\x1c001\x1c1200115001");
+    for message in oxi_host_mock::customisation() {
+        let bytes = message.to_bytes().expect("fixture serializable");
+        load(terminal, &bytes);
+    }
 }
 
 pub fn powered_and_loaded() -> Terminal {
@@ -66,7 +49,7 @@ pub fn extract_trq(actions: &[Action]) -> oxi_core::TransactionRequest {
 /// Flujo completo hasta el TRQ (tarjeta + PIN + importe).
 pub fn run_to_transaction_request(terminal: &mut Terminal) -> (oxi_core::TransactionRequest, char) {
     let _ = terminal.handle(Event::CardInserted(Card {
-        track2: Some("5899410000000000=2512".into()),
+        track2: Some(oxi_host_mock::test_card()),
         ..Card::default()
     }));
     assert_eq!(
