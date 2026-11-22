@@ -247,6 +247,11 @@ impl Terminal {
         self.states.len()
     }
 
+    /// Contenido crudo de una pantalla descargada (el runtime lo renderiza).
+    pub fn screen_content(&self, id: &ScreenSelector) -> Option<&[u8]> {
+        self.screens.get(id).map(|screen| screen.data.as_slice())
+    }
+
     // --- loop de eventos ---
 
     /// Procesa un evento y devuelve las acciones a ejecutar.

@@ -102,13 +102,21 @@ impl ScriptedHost {
         expect_ready(&response, &mut report)?;
 
         // Petición del Config ID (comando 3) y su respuesta Terminal State.
+        // Un host real atiende TRQs en cualquier momento: si aparece uno
+        // mientras se espera el Terminal State, se responde y se sigue.
         send_host(&mut stream, &fixtures::request_config_id(), &mut report).await?;
-        let response = read_terminal(&mut stream, config.idle_timeout, &mut report).await?;
-        if let TerminalMessage::SolicitedStatus { descriptor, .. } = &response {
-            if *descriptor != StatusDescriptor::TerminalState {
-                return Err(HostError::Script(format!(
-                    "se esperaba Terminal State tras el comando 3, llegó {descriptor:?}"
-                )));
+        loop {
+            match read_terminal(&mut stream, config.idle_timeout, &mut report).await? {
+                TerminalMessage::SolicitedStatus {
+                    descriptor: StatusDescriptor::TerminalState,
+                    ..
+                } => break,
+                TerminalMessage::TransactionRequest(request) => {
+                    report.transactions += 1;
+                    let reply = fixtures::transaction_reply(&request, config.approve);
+                    send_host(&mut stream, &reply, &mut report).await?;
+                }
+                _ => {}
             }
         }
 

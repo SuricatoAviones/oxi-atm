@@ -13,3 +13,6 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+
+[lints]
+workspace = true

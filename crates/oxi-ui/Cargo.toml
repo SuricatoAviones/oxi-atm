@@ -5,10 +5,21 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Dependencias previstas (se agregan en la fase que las usa):
-# - fase 6 (ensamblado/CLI): oxi-engine, oxi-net (path), tokio, serde,
-#   anyhow, tracing, tracing-subscriber
+# Fase 6 (ensamblado): el único crate que toca todo. La GUI llega después
+# del núcleo (fase 9); aquí va el runtime glue + CLI.
 [dependencies]
+oxi-core = { path = "../oxi-core" }
+oxi-engine = { path = "../oxi-engine" }
+oxi-net = { path = "../oxi-net" }
+anyhow.workspace = true
+serde.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "signal"] }
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+oxi-host-mock = { path = "../oxi-host-mock" }
 
 [lints]
 workspace = true
