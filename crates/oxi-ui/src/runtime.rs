@@ -111,8 +111,10 @@ pub fn spawn(config: &SimConfig) -> RuntimeHandle {
     // --- tarea del motor ---
     let engine_updates = update_tx;
     let engine_events = event_tx.clone();
+    let security = config.security.to_engine();
     let engine_task = tokio::spawn(async move {
         let mut terminal = Terminal::new();
+        terminal.configure_security(security);
         let mut timers: HashMap<u8, JoinHandle<()>> = HashMap::new();
         let options = ParseOptions::default();
         let initial = terminal.handle(Event::PoweredOn);

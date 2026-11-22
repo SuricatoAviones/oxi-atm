@@ -176,15 +176,15 @@ pub(crate) fn on_fdk_pressed(terminal: &mut Terminal, fdk: Fdk, next: StateNumbe
                 apply_fdk_info_value(terminal, &table, fdk);
             }
         }
-        // B: valida el PIN remoto formando el bloque ISO-0 antes de seguir
-        // (manual §11-3; el FIT del driver real pide verificación remota).
+        // B: valida el PIN remoto formando el bloque ISO-0 (y cifrándolo si
+        // hay clave) antes de seguir (manual §11-3/§11-6).
         Some('B') => {
             let pin = terminal.buffers().pin.clone();
             let pan = terminal
                 .card()
                 .and_then(|card| card.track2.clone())
                 .unwrap_or_default();
-            match crate::crypto::iso0_pin_block(&pin, &pan) {
+            match terminal.build_pin_block(&pin, &pan) {
                 Ok(block) => terminal.buffers_mut().pin_block = Some(block),
                 Err(err) => actions.push(Action::Log(format!(
                     "PIN block no formado: {err}; el TRQ irá sin buffer A"
