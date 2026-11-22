@@ -4,6 +4,32 @@
 //! enums, split por FS/GS y roundtrips verificados. No depende de tokio, I/O ni
 //! interfaz (ver `docs/ARCHITECTURE.md` §2).
 
+mod command;
+mod customisation;
+mod error;
+mod host;
+mod modes;
+mod reply;
+mod terminal;
+mod types;
+mod wire;
+
+pub use command::TerminalCommand;
+pub use customisation::{
+    ConfigParams, CustomisationData, DateTimeLoad, Ecpl, EcplOption, FitDef, ScreenDef,
+    StateTableDef, TimerEntry,
+};
+pub use error::ParseError;
+pub use host::{parse_host, HostMessage, ParseOptions};
+pub use modes::{disposition, Disposition, ModeContext, OperationalMode};
+pub use reply::{InteractiveTransactionResponse, TransactionReply};
+pub use terminal::{StatusDescriptor, TerminalMessage, TransactionRequest};
+pub use types::{
+    CardReturnFlag, Fdk, FdkMask, Luno, Mcn, NoteCounts, PrintGroup, PrinterFlag, ScreenId,
+    ScreenSelector, StateNumber, STATE_DISABLED,
+};
+pub use wire::{RawFields, FS, GS};
+
 /// Nombre del crate, para verificación de armado del workspace.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 

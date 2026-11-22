@@ -1,0 +1,3 @@
+# Los scripts de shell deben conservar LF en el working tree (WSL/Linux
+# no toleran \r). PowerShell no se ve afectado por LF.
+*.sh text eol=lf
