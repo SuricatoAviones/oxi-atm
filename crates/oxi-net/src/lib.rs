@@ -1,8 +1,14 @@
 //! `oxi-net`: transporte TCP del simulador (ATM → host) con tokio.
 //!
-//! Codec de encuadre configurable (default: prefijo de 2 bytes big-endian,
-//! confirmado por el dueño, SPEC §1) y reconexión con backoff. No conoce
-//! `oxi-engine`: habla el idioma de `oxi-core` (bytes de mensajes).
+//! El ATM **inicia** la conexión hacia el host (rol cliente, SPEC §1). Este
+//! crate trabaja con payloads enmarcados (bytes completos de mensaje); el
+//! parseo NDC vive en `oxi-core` — una sola fuente de verdad del formato.
+
+mod codec;
+mod error;
+
+pub use codec::{FrameCodec, LenPrefix2Be};
+pub use error::NetError;
 
 /// Nombre del crate, para verificación de armado del workspace.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
