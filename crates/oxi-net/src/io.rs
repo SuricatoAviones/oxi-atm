@@ -84,7 +84,10 @@ pub async fn pump<S>(
     stream: S,
     to_engine: mpsc::Sender<Vec<u8>>,
     mut from_engine: mpsc::Receiver<Vec<u8>>,
-) -> Result<PumpEnd, NetError> {
+) -> Result<PumpEnd, NetError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut io = FrameIo::new(stream);
     loop {
         tokio::select! {
@@ -181,9 +184,9 @@ mod tests {
         let mut io = FrameIo::new(client);
         io.write_frame(b"HOLA").await.expect("escritura válida");
 
-        let mut buf = [0u8; 8];
+        // El frame mide 2 (prefijo) + 4 (HOLA) = 6 bytes exactos.
+        let mut buf = [0u8; 6];
         host.read_exact(&mut buf).await.expect("lectura del host");
-        // Prefijo 00 04 + "HOLA".
         assert_eq!(&buf[..2], &[0x00, 0x04]);
         assert_eq!(&buf[2..], b"HOLA");
     }
@@ -210,7 +213,10 @@ mod tests {
         assert_eq!(first, b"UNO");
         let second = to_engine_rx.recv().await.expect("frame DOS");
         assert_eq!(second, b"DOS");
-        from_engine_tx.send(b"TRES".to_vec()).await.expect("canal vivo");
+        from_engine_tx
+            .send(b"TRES".to_vec())
+            .await
+            .expect("canal vivo");
 
         // El host lee la respuesta del motor (prefijo + payload).
         let mut reply = [0u8; 6];
@@ -221,7 +227,10 @@ mod tests {
         // El host cierra: el pump termina con StreamClosed.
         drop(host);
         drop(from_engine_tx);
-        let end = pump_task.await.expect("pump sin pánico").expect("pump sin error");
+        let end = pump_task
+            .await
+            .expect("pump sin pánico")
+            .expect("pump sin error");
         assert_eq!(end, PumpEnd::StreamClosed);
     }
 
@@ -231,7 +240,7 @@ mod tests {
         let bytes = vec![0xAB; 40];
         let text = hex_preview(&bytes);
         assert!(text.contains("+8 más"));
-        let shown = text.split(' ').count();
-        assert_eq!(shown, 33, "32 bytes + la nota '(+8 más)'");
+        let shown = text.split(' ').filter(|token| *token == "AB").count();
+        assert_eq!(shown, 32, "solo los primeros 32 bytes van en hex");
     }
 }

@@ -157,7 +157,7 @@ mod tests {
         let addr = listener.local_addr().expect("addr");
         drop(listener);
 
-        let (state_tx, mut state_rx) = mpsc::channel(16);
+        let (state_tx, state_rx) = mpsc::channel(16);
         let config = ReconnectConfig {
             max_attempts: 3,
             initial_backoff: Duration::from_millis(5),
@@ -184,7 +184,7 @@ mod tests {
         let addr = listener.local_addr().expect("addr");
         drop(listener);
 
-        let (state_tx, mut state_rx) = mpsc::channel(16);
+        let (state_tx, state_rx) = mpsc::channel(16);
         let config = ReconnectConfig {
             max_attempts: 10,
             initial_backoff: Duration::from_millis(20),

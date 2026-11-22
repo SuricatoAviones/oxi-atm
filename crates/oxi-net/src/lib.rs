@@ -7,10 +7,12 @@
 mod codec;
 mod connect;
 mod error;
+mod io;
 
 pub use codec::{FrameCodec, LenPrefix2Be};
 pub use connect::{connect_with_backoff, ConnectionState, ReconnectConfig};
 pub use error::NetError;
+pub use io::{pump, FrameIo, PumpEnd};
 
 /// Nombre del crate, para verificación de armado del workspace.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
