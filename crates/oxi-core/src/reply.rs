@@ -190,6 +190,69 @@ impl TransactionReply {
     }
 }
 
+/// Interactive Transaction Response: clase 3, sub-clase 2 (manual §10-79).
+///
+/// Layout verificado contra el parser de electron-atm: `[3] "2"+flag+teclas`,
+/// `[4] timer de pantalla`, `[5] datos de pantalla`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractiveTransactionResponse {
+    /// Flag de display (primer char tras la sub-clase, §10-79).
+    pub display_flag: char,
+    /// Teclas activas como cadena binaria: el primer bit habilita el teclado
+    /// numérico y los siguientes corresponden a las FDKs (§10-79). Formato
+    /// DISTINTO de la máscara decimal de las state tables (SPEC §5.3).
+    pub active_keys: String,
+    /// Timer de pantalla en segundos (3 chars); `None` si no vino.
+    pub screen_timer: Option<String>,
+    /// Datos de pantalla dinámica (crudos, con caracteres de control).
+    pub screen_data: Vec<u8>,
+}
+
+impl InteractiveTransactionResponse {
+    /// Parsea el cuerpo de clase 3 sub-clase 2.
+    pub(crate) fn parse(raw: &RawFields) -> Result<Self, ParseError> {
+        let head = raw.ascii_field(3)?;
+        let mut chars = head.chars();
+        // El primer char es la sub-clase '2' (validada por el dispatcher).
+        let _subclass = chars.next();
+        let Some(display_flag) = chars.next() else {
+            return Err(ParseError::malformed("ITR sin flag de display (§10-79)"));
+        };
+        let active_keys: String = chars.collect();
+        if !active_keys.chars().all(|c| c == '0' || c == '1') {
+            return Err(ParseError::invalid_field(
+                "ITR active keys",
+                format!("'{active_keys}': se esperaba una cadena binaria (§10-79)"),
+            ));
+        }
+        let screen_timer = match raw.fields().get(4) {
+            Some(field) if field.is_empty() => None,
+            Some(field) => {
+                let text = std::str::from_utf8(field)
+                    .map_err(|_| ParseError::malformed("ITR timer no es ASCII"))?;
+                if text.len() != 3 || !text.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(ParseError::invalid_field(
+                        "ITR screen timer",
+                        format!("'{text}' debe ser 3 dígitos (§10-79)"),
+                    ));
+                }
+                Some(text.to_owned())
+            }
+            None => None,
+        };
+        let screen_data = match raw.fields().get(5) {
+            Some(field) => field.clone(),
+            None => Vec::new(),
+        };
+        Ok(Self {
+            display_flag,
+            active_keys,
+            screen_timer,
+            screen_data,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,5 +325,32 @@ mod tests {
         assert_eq!(reply.next_state.value(), 7);
         assert_eq!(reply.notes, None);
         assert_eq!(reply.print_groups, Vec::<PrintGroup>::new());
+    }
+
+    // ---- ITR (3/2) ----
+
+    /// ITR sintética: display flag '1', teclado numérico + FDK A activos
+    /// (cadena binaria: bit0 = numérico, bit1 = FDK A), timer 30 s, pantalla
+    /// dinámica con controles.
+    #[test]
+    fn itr_should_parse_flag_keys_timer_and_screen() {
+        let body = b"3\x1c\x1c\x1c210\x1c030\x1c\x0c\x0fGDHOLA";
+        let itr = InteractiveTransactionResponse::parse(&raw(body)).expect("ITR válida");
+        assert_eq!(itr.display_flag, '1');
+        assert_eq!(itr.active_keys, "0");
+        assert_eq!(itr.screen_timer.as_deref(), Some("030"));
+        assert_eq!(itr.screen_data, b"\x0c\x0fGDHOLA");
+    }
+
+    #[test]
+    fn itr_should_reject_non_binary_keys() {
+        let body = b"3\x1c\x1c\x1c21X\x1c030";
+        assert!(InteractiveTransactionResponse::parse(&raw(body)).is_err());
+    }
+
+    #[test]
+    fn itr_should_reject_bad_timer() {
+        let body = b"3\x1c\x1c\x1c2100\x1c3X";
+        assert!(InteractiveTransactionResponse::parse(&raw(body)).is_err());
     }
 }

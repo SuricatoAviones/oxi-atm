@@ -130,6 +130,19 @@ fn describe(msg: &HostMessage) -> String {
                 tr.next_state, tr.function_id, tr.notes, tr.screen, tr.mcn
             )
         }
+        HostMessage::InteractiveTransactionResponse(itr) => {
+            format!(
+                "ITR(flag='{}' teclas='{}' timer={:?} pantalla={} bytes)",
+                itr.display_flag,
+                itr.active_keys,
+                itr.screen_timer,
+                itr.screen_data.len()
+            )
+        }
+        HostMessage::EncryptionKeyChange { .. } => "EncryptionKeyChange (crudo; fase 7)".to_owned(),
+        HostMessage::ExtendedEncryptionKeyChange { .. } => {
+            "ExtendedEncryptionKeyChange (crudo; fase 7)".to_owned()
+        }
         HostMessage::Unknown { .. } => "Unknown (preservado; el motor decide reject)".to_owned(),
     }
 }

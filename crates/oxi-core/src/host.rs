@@ -7,7 +7,7 @@
 
 use crate::command::TerminalCommand;
 use crate::customisation::CustomisationData;
-use crate::reply::TransactionReply;
+use crate::reply::{InteractiveTransactionResponse, TransactionReply};
 use crate::wire::RawFields;
 use crate::ParseError;
 
@@ -29,6 +29,21 @@ pub enum HostMessage {
     Customisation(CustomisationData),
     /// Clase 4: Transaction Reply (manual §10-58).
     TransactionReply(TransactionReply),
+    /// Clase 3 sub-clase 2: Interactive Transaction Response (manual §10-79).
+    InteractiveTransactionResponse(InteractiveTransactionResponse),
+    /// Clase 3 sub-clase 3: Encryption Key Change (manual §10-42). La
+    /// estructura interna se tipa en la fase 7; el mensaje crudo se
+    /// preserva porque la matriz de modos lo trata distinto (§10-95: A3).
+    EncryptionKeyChange {
+        /// Mensaje tal como llegó.
+        raw: RawFields,
+    },
+    /// Clase 3 sub-clase 4: Extended Encryption Key Change (manual §10-45).
+    /// Ídem [`HostMessage::EncryptionKeyChange`]: crudo hasta la fase 7.
+    ExtendedEncryptionKeyChange {
+        /// Mensaje tal como llegó.
+        raw: RawFields,
+    },
     /// Clase no modelada o código/identificador no reconocido. El mensaje
     /// crudo queda preservado para diagnóstico y para la política de rechazo
     /// del motor (manual §10-87, §10-95).
@@ -67,7 +82,12 @@ pub fn parse_host(raw: &RawFields, options: &ParseOptions) -> Result<HostMessage
                     // Sub-clase 1 sin identificador: no documentado.
                     None => Ok(HostMessage::Unknown { raw: raw.clone() }),
                 },
-                // Sub-clases 2 (ITR), 3 (EKC) y 4 (Extended EKC) llegan en T1.6.
+                '2' => Ok(HostMessage::InteractiveTransactionResponse(
+                    InteractiveTransactionResponse::parse(raw)?,
+                )),
+                '3' => Ok(HostMessage::EncryptionKeyChange { raw: raw.clone() }),
+                '4' => Ok(HostMessage::ExtendedEncryptionKeyChange { raw: raw.clone() }),
+                // Otras sub-clases: no documentadas en el manual.
                 _ => Ok(HostMessage::Unknown { raw: raw.clone() }),
             }
         }

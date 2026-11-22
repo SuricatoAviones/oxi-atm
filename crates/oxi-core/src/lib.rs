@@ -19,7 +19,7 @@ pub use customisation::{
 };
 pub use error::ParseError;
 pub use host::{parse_host, HostMessage, ParseOptions};
-pub use reply::TransactionReply;
+pub use reply::{InteractiveTransactionResponse, TransactionReply};
 pub use types::{
     CardReturnFlag, Fdk, FdkMask, Luno, Mcn, NoteCounts, PrintGroup, PrinterFlag, ScreenId,
     ScreenSelector, StateNumber, STATE_DISABLED,
