@@ -117,8 +117,12 @@ fn respond_info(terminal: &Terminal, message: &HostMessage) -> Vec<Action> {
             vec![send(terminal.terminal_state('1', vec![]))]
         }
         TerminalCommand::SendSupplyCounters => {
-            // g1 '2' = contadores de suministros (§9-19); datos en fase 4.
-            vec![send(terminal.terminal_state('2', vec![]))]
+            // Tabla 9-8: 'F' + g1 '2' + TSN(4) + acumuladas(7) + 4×20
+            // contadores + capturadas(5) + sobres(5) + cámara(5) + serial(5).
+            vec![send(terminal.terminal_state(
+                '2',
+                vec![terminal.supply_counters_payload()],
+            ))]
         }
         TerminalCommand::SendDateAndTime => {
             // g1 '5' = fecha y hora del terminal (§9-19); datos en fase 4.
@@ -160,17 +164,57 @@ fn execute_transaction_reply(
     terminal.set_card_return(reply.card_return);
 
     // Grupos de impresión (flag 1 journal, 2 receipt, 3 ambos; §10-58).
+    // Las fallas de impresora generan unsolicited status y la transacción
+    // continúa (§9-58: no requieren recuperación de Central).
     for group in reply.print_groups {
+        let mut fault = None;
+        match group.flag {
+            oxi_core::PrinterFlag::Journal => {
+                if terminal.hardware_mut().journal.print(&group.data).is_err() {
+                    fault = Some(('H', terminal.hardware().journal.supplies_status()));
+                }
+            }
+            oxi_core::PrinterFlag::Receipt => {
+                if terminal.hardware_mut().receipt.print(&group.data).is_err() {
+                    fault = Some(('G', terminal.hardware().receipt.supplies_status()));
+                }
+            }
+            oxi_core::PrinterFlag::JournalAndReceipt => {
+                let journal_ok = terminal.hardware_mut().journal.print(&group.data).is_ok();
+                let receipt_ok = terminal.hardware_mut().receipt.print(&group.data).is_ok();
+                if !journal_ok {
+                    fault = Some(('H', terminal.hardware().journal.supplies_status()));
+                } else if !receipt_ok {
+                    fault = Some(('G', terminal.hardware().receipt.supplies_status()));
+                }
+            }
+            oxi_core::PrinterFlag::NoPrint => {}
+        }
+        if let Some((device, supplies)) = fault {
+            let condition = crate::hardware::DeviceCondition {
+                device,
+                status: "1".into(),
+                severity: '4',
+                diagnostic: String::new(),
+                supplies: Some(supplies),
+            };
+            actions.push(Action::Send(terminal.unsolicited(condition)));
+            actions.push(Action::Log(format!(
+                "falla de impresora '{device}' al imprimir; la transacción continúa"
+            )));
+        }
         actions.push(Action::Print {
             printer: group.flag,
             data: group.data,
         });
     }
 
-    // Dispensado: Ready se envía cuando el cardholder retira (timer 07).
+    // Dispensado: el hardware virtual valida casetes y fallas inyectadas
+    // (Tabla 9-31). Ready y transición se difieren al retiro (timer 07).
     let mut ready_deferred = false;
     if let Some(notes) = reply.notes {
         let counts = notes.counts();
+        let (outcome, actual) = terminal.hardware_mut().dispenser.dispense(counts);
         terminal.set_last_transaction(crate::terminal::LastTransaction {
             serial: reply
                 .serial
@@ -178,13 +222,49 @@ fn execute_transaction_reply(
                 .and_then(|serial| serial.parse().ok())
                 .unwrap_or(0),
             status: '1',
-            notes: counts,
+            notes: actual,
         });
-        if notes.total() > 0 {
-            terminal.set_pending(Some(crate::event::Pending::Cash));
-            actions.push(Action::Dispense(notes));
-            actions.push(crate::state_exec::start_timer(terminal, 7));
-            ready_deferred = true;
+        let delivered: u16 = actual.iter().sum();
+        match outcome {
+            crate::hardware::DispenseOutcome::Complete => {
+                terminal.set_pending(Some(crate::event::Pending::Cash));
+                actions.push(Action::Dispense(notes));
+                actions.push(crate::state_exec::start_timer(terminal, 7));
+                ready_deferred = true;
+            }
+            crate::hardware::DispenseOutcome::Short => {
+                // Dispensado parcial: se entrega lo disponible y se reporta
+                // falla de dispositivo ('8') con los conteos reales.
+                let actual_notes = oxi_core::NoteCounts::new(actual)
+                    .unwrap_or_else(|_| oxi_core::NoteCounts::default());
+                let condition = crate::hardware::DeviceCondition {
+                    device: 'E',
+                    status: crate::hardware::Dispenser::status_field(outcome, actual),
+                    severity: '2',
+                    diagnostic: String::new(),
+                    supplies: Some(terminal.hardware().dispenser.notes_in_cassettes()),
+                };
+                actions.push(Action::Send(terminal.device_fault(condition)));
+                if delivered > 0 {
+                    terminal.set_pending(Some(crate::event::Pending::Cash));
+                    actions.push(Action::Dispense(actual_notes));
+                    actions.push(crate::state_exec::start_timer(terminal, 7));
+                    ready_deferred = true;
+                }
+            }
+            crate::hardware::DispenseOutcome::None
+            | crate::hardware::DispenseOutcome::Retracted => {
+                // Sin dispensado: falla de dispositivo; el flujo sigue al
+                // next state del reply (§10-58: respuesta = device fault).
+                let condition = crate::hardware::DeviceCondition {
+                    device: 'E',
+                    status: crate::hardware::Dispenser::status_field(outcome, actual),
+                    severity: '4',
+                    diagnostic: String::new(),
+                    supplies: Some(terminal.hardware().dispenser.notes_in_cassettes()),
+                };
+                actions.push(Action::Send(terminal.device_fault(condition)));
+            }
         }
     }
 

@@ -159,6 +159,16 @@ pub enum TerminalMessage {
     /// Clase 1/1: Transaction Request (§9-2). Boxeado: es la variante
     /// grande (12+ campos) y `large_enum_variant` exige equilibrio.
     TransactionRequest(Box<TransactionRequest>),
+    /// Clase 1/2: Unsolicited Status (manual §9-58, Tabla 9-24): `12` + LUNO
+    /// + campo vacío + Status Information (DIG + datos, FS-separados).
+    UnsolicitedStatus {
+        /// LUNO del terminal.
+        luno: Luno,
+        /// Campos de status information: el primero es el Device
+        /// Identification Graphic (1 char) concatenado con su Device Status;
+        /// luego severidad/diagnóstico/supplies (Tabla 9-27).
+        data: Vec<String>,
+    },
     /// Clase 2/2: Solicited Status (§9-13). Los `data` van tras el
     /// descriptor separados por FS; para `TerminalState` el primer dato es
     /// `g1` + primer subcampo concatenados (patrón del builder verificado
@@ -178,6 +188,15 @@ impl TerminalMessage {
     pub fn to_bytes(&self) -> Result<Vec<u8>, ParseError> {
         match self {
             Self::TransactionRequest(request) => request.to_bytes(),
+            Self::UnsolicitedStatus { luno, data } => {
+                let mut fields: Vec<Vec<u8>> = Vec::new();
+                fields.push(b"12".to_vec());
+                fields.push(luno.as_str().as_bytes().to_vec());
+                fields.push(Vec::new());
+                let joined = data.join("\u{1c}");
+                fields.push(joined.into_bytes());
+                Ok(RawFields::new(fields)?.rebuild())
+            }
             Self::SolicitedStatus {
                 luno,
                 descriptor,
@@ -233,6 +252,19 @@ mod tests {
         assert_eq!(
             msg.to_bytes().expect("serialización válida"),
             b"22\x1c001\x1c\x1cF\x1c60001"
+        );
+    }
+
+    /// Unsolicited (Tabla 9-24): `12` + LUNO + campo vacío + status info.
+    #[test]
+    fn unsolicited_status_should_serialize_per_table_9_24() {
+        let msg = TerminalMessage::UnsolicitedStatus {
+            luno: luno(),
+            data: vec!["B0001".into()],
+        };
+        assert_eq!(
+            msg.to_bytes().expect("serialización válida"),
+            b"12\x1c001\x1c\x1cB0001"
         );
     }
 

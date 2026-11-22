@@ -15,6 +15,7 @@ use oxi_core::{
 };
 
 use crate::event::{Action, BufferId, Card, Event, Key, Pending};
+use crate::hardware::{DeviceCondition, Fault, Hardware};
 
 /// Duración por defecto de un timer no configurado (manual §10-14 Nota 7:
 /// 30 ticks de 800 ms ≈ 24 s; aquí se usa 30 s, el default del Cap. 7).
@@ -152,6 +153,10 @@ pub struct Terminal {
     /// Next state pendiente de completar el dispensado (function 2/8, §10-58:
     /// la transición espera al retiro del efectivo o al timer 07).
     post_cash_next: Option<StateNumber>,
+    /// Hardware virtual (dispensador, lector, impresoras, sensores).
+    hardware: Hardware,
+    /// Intentos de transacción detectados (campo g3 de Tabla 9-8).
+    attempts: u32,
     /// Guarda contra recursión del cierre por defecto (cadena J→000→…).
     closing: bool,
 }
@@ -199,6 +204,8 @@ impl Terminal {
             retry_state: None,
             last_transaction: None,
             post_cash_next: None,
+            hardware: Hardware::default(),
+            attempts: 0,
             closing: false,
         }
     }
@@ -251,7 +258,11 @@ impl Terminal {
             Event::CardInserted(card) => self.handle_card_inserted(card),
             Event::CardTaken => {
                 self.card = None;
-                vec![Action::Log("tarjeta retirada por el cardholder".into())]
+                self.hardware.reader.state = Some(crate::hardware::ReaderState::Idle);
+                vec![
+                    Action::Log("tarjeta retirada por el cardholder".into()),
+                    Action::CancelTimer(9),
+                ]
             }
             Event::CashTaken => crate::state_exec::on_cash_taken(self),
             Event::TimerFired(timer) => self.handle_timer(timer),
@@ -586,6 +597,80 @@ impl Terminal {
     /// Toma (y limpia) el next state pendiente del dispensado.
     pub(crate) fn take_post_cash_next(&mut self) -> Option<StateNumber> {
         self.post_cash_next.take()
+    }
+
+    pub(crate) fn hardware(&self) -> &Hardware {
+        &self.hardware
+    }
+
+    pub(crate) fn hardware_mut(&mut self) -> &mut Hardware {
+        &mut self.hardware
+    }
+
+    /// Cuenta un intento de transacción (campo g3 de la Tabla 9-8).
+    pub(crate) fn count_attempt(&mut self) {
+        self.attempts = self.attempts.wrapping_add(1).min(9_999_999);
+    }
+
+    /// Payload del Send Supply Counters (Tabla 9-8): TSN(4) + acumuladas(7)
+    /// + 4×20 contadores + capturadas(5) + sobres(5) + cámara(5) + serial(5).
+    pub(crate) fn supply_counters_payload(&self) -> String {
+        let tsn = self.last_transaction.map(|last| last.serial).unwrap_or(0);
+        let dispenser = &self.hardware.dispenser;
+        format!(
+            "{tsn:04}{:07}{}{}{}{}{:05}{:05}0000000000",
+            self.attempts,
+            dispenser.notes_in_cassettes(),
+            dispenser.notes_rejected(),
+            dispenser.notes_dispensed(),
+            dispenser.last_notes_dispensed(),
+            self.hardware.reader.captures.min(99999),
+            0, // sobres depositados (sin depository en v1)
+        )
+    }
+
+    /// Aplica una falla de hardware y devuelve las acciones (unsolicited
+    /// status cuando la condición lo amerita, §9-58).
+    pub fn inject_fault(&mut self, fault: Fault) -> Vec<Action> {
+        let config_id = self.config_id.unwrap_or(0);
+        let mut actions = vec![Action::Log(format!("falla inyectada: {fault:?}"))];
+        if let Some(condition) = self.hardware.inject(fault, config_id) {
+            actions.push(Action::Send(self.unsolicited(condition)));
+        }
+        actions
+    }
+
+    /// Entra/sale de modo supervisor (pantalla local): reporta 'P2x'
+    /// (Tabla 9-41) como unsolicited.
+    pub fn set_supervisor_mode(&mut self, active: bool) -> Vec<Action> {
+        self.hardware.sensors.supervisor_mode = active;
+        let field = self.hardware.sensors.mode_change_field();
+        vec![
+            Action::Log(format!("modo supervisor: {active}")),
+            Action::Send(TerminalMessage::UnsolicitedStatus {
+                luno: self.config.luno.clone(),
+                data: vec![field],
+            }),
+        ]
+    }
+
+    /// Unsolicited status a partir de una condición de dispositivo
+    /// (Tabla 9-27: DIG+status, severidad, diagnóstico, supplies).
+    pub(crate) fn unsolicited(&self, condition: DeviceCondition) -> TerminalMessage {
+        TerminalMessage::UnsolicitedStatus {
+            luno: self.config.luno.clone(),
+            data: condition.status_fields(),
+        }
+    }
+
+    /// Solicited device fault ('8', §9-13): respuesta cuando una operación
+    /// del Transaction Reply falla y Central debe enterarse.
+    pub(crate) fn device_fault(&self, condition: DeviceCondition) -> TerminalMessage {
+        TerminalMessage::SolicitedStatus {
+            luno: self.config.luno.clone(),
+            descriptor: StatusDescriptor::DeviceFault,
+            data: condition.status_fields(),
+        }
     }
 
     /// Rota el MCN según el rango configurado (opción 34, §10-27).

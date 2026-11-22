@@ -6,12 +6,17 @@
 
 mod crypto;
 mod event;
+mod hardware;
 mod host_ops;
 mod state_exec;
 mod terminal;
 
 pub use crypto::{iso0_pin_block, CryptoError};
 pub use event::{Action, BufferId, Card, Event, Key, Pending};
+pub use hardware::{
+    Cassette, DeviceCondition, DispenseOutcome, Dispenser, Fault, Hardware, PaperState, Printer,
+    Reader, ReaderState, Sensors, CASSETTE_COUNT,
+};
 pub use terminal::{Buffers, Terminal};
 
 /// Nombre del crate, para verificación de armado del workspace.
