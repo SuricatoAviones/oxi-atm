@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+
+# Los pines de dependencias ([workspace.dependencies]) se agregan junto con la
+# fase que los usa (ROADMAP): fase 1 serde/thiserror en oxi-core, fase 2
+# tokio/bytes en oxi-net, etc. Declararlos antes genera warnings de "unused
+# workspace dependency" en este toolchain.

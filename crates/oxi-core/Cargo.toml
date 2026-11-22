@@ -1,0 +1,11 @@
+[package]
+name = "oxi-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Dependencias previstas (se agregan en la fase que las usa, sin declararlas
+# antes de tiempo para no generar warnings de "unused dependency"):
+# - fase 1 (parser): serde, thiserror (pines en [workspace.dependencies])
+[dependencies]
