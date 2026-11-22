@@ -315,6 +315,101 @@ impl std::fmt::Display for ScreenId {
     }
 }
 
+/// Identificador de pantalla (SPEC §6; manual §10-11 campo 'h': 3, 5 o 6 chars).
+///
+/// Formas del cable:
+/// - 3 dígitos (pantalla de cardholder, compatibilidad);
+/// - `"0123"`: 4 dígitos entre comillas;
+/// - letra de grupo + 2 dígitos (`C04`) o letra + 4 dígitos (`E0123`, solo
+///   grupos E/X/Y/Z/u; la 'l' mapea a 'u', manual §10-11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScreenSelector {
+    /// Pantalla de cardholder (numérica, 0–9999).
+    Customer(ScreenId),
+    /// Pantalla de grupo/reservada: letra + número.
+    Group {
+        /// Letra de grupo ('C', 'E', 'u', …).
+        letter: char,
+        /// Número dentro del grupo (2 o 4 dígitos).
+        digits: u16,
+    },
+}
+
+impl ScreenSelector {
+    /// Extrae el id del inicio de un campo de pantalla, devolviendo el resto
+    /// (datos de pantalla, posiblemente con teclado tras un GS).
+    pub fn take(text: &str) -> Result<(Self, &str), ParseError> {
+        let mut chars = text.chars();
+        match chars.next() {
+            // "0123": 4 dígitos entre comillas (6 chars en total).
+            Some('"') => {
+                let digits: String = text.chars().skip(1).take(4).collect();
+                let closing = text.chars().nth(5);
+                if digits.len() == 4
+                    && digits.bytes().all(|b| b.is_ascii_digit())
+                    && closing == Some('"')
+                {
+                    let value: u16 = digits
+                        .parse()
+                        .map_err(|_| ParseError::invalid_field("screen number", "no numérico"))?;
+                    let id = ScreenId::new(value)?;
+                    Ok((Self::Customer(id), &text[6..]))
+                } else {
+                    Err(ParseError::invalid_field(
+                        "screen number",
+                        format!("'{text}': comillas sin 4 dígitos (manual §10-11)"),
+                    ))
+                }
+            }
+            // Letra de grupo: E/X/Y/Z/u/l llevan 4 dígitos; el resto, 2.
+            Some(letter) if letter.is_ascii_alphabetic() => {
+                let digit_count = if matches!(letter, 'E' | 'X' | 'Y' | 'Z' | 'u' | 'l') {
+                    4
+                } else {
+                    2
+                };
+                let digits: String = text.chars().skip(1).take(digit_count).collect();
+                if digits.len() == digit_count && digits.bytes().all(|b| b.is_ascii_digit()) {
+                    let value: u16 = digits.parse().map_err(|_| {
+                        ParseError::invalid_field("screen group number", "no numérico")
+                    })?;
+                    // 'l' mapea directamente a 'u' (manual §10-11).
+                    let letter = if letter == 'l' { 'u' } else { letter };
+                    Ok((
+                        Self::Group {
+                            letter,
+                            digits: value,
+                        },
+                        &text[1 + digit_count..],
+                    ))
+                } else {
+                    Err(ParseError::invalid_field(
+                        "screen number",
+                        format!("'{text}': grupo sin {digit_count} dígitos (manual §10-11)"),
+                    ))
+                }
+            }
+            // 3 dígitos sueltos.
+            Some(_) => {
+                let digits: String = text.chars().take(3).collect();
+                if digits.len() == 3 && digits.bytes().all(|b| b.is_ascii_digit()) {
+                    let value: u16 = digits
+                        .parse()
+                        .map_err(|_| ParseError::invalid_field("screen number", "no numérico"))?;
+                    let id = ScreenId::new(value)?;
+                    Ok((Self::Customer(id), &text[3..]))
+                } else {
+                    Err(ParseError::invalid_field(
+                        "screen number",
+                        format!("'{text}': se esperaban 3 dígitos (manual §10-11)"),
+                    ))
+                }
+            }
+            None => Err(ParseError::malformed("campo de pantalla vacío")),
+        }
+    }
+}
+
 /// Bandera de devolución de tarjeta del Transaction Reply (SPEC §4.3).
 ///
 /// Valores documentados (manual §10-59): '0' devolver en el Close,

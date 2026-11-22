@@ -5,17 +5,22 @@
 //! interfaz (ver `docs/ARCHITECTURE.md` §2).
 
 mod command;
+mod customisation;
 mod error;
 mod host;
 mod types;
 mod wire;
 
 pub use command::TerminalCommand;
+pub use customisation::{
+    ConfigParams, CustomisationData, DateTimeLoad, Ecpl, EcplOption, FitDef, ScreenDef,
+    StateTableDef, TimerEntry,
+};
 pub use error::ParseError;
 pub use host::{parse_host, HostMessage, ParseOptions};
 pub use types::{
     CardReturnFlag, Fdk, FdkMask, Luno, Mcn, NoteCounts, PrintGroup, PrinterFlag, ScreenId,
-    StateNumber, STATE_DISABLED,
+    ScreenSelector, StateNumber, STATE_DISABLED,
 };
 pub use wire::{RawFields, FS, GS};
 

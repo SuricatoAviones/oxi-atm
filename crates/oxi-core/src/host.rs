@@ -6,6 +6,7 @@
 //! el rechazo según §10-87/§10-95, el parser no inventa política.
 
 use crate::command::TerminalCommand;
+use crate::customisation::CustomisationData;
 use crate::wire::RawFields;
 use crate::ParseError;
 
@@ -23,6 +24,8 @@ pub struct ParseOptions {
 pub enum HostMessage {
     /// Clase 1: comandos del terminal.
     TerminalCommand(TerminalCommand),
+    /// Clase 3 sub-clase 1: customización (pantallas, estados, FITs, etc.).
+    Customisation(CustomisationData),
     /// Clase no modelada o código/identificador no reconocido. El mensaje
     /// crudo queda preservado para diagnóstico y para la política de rechazo
     /// del motor (manual §10-87, §10-95).
@@ -36,7 +39,7 @@ pub enum HostMessage {
 ///
 /// El campo de clase puede traer un flag de respuesta ignorable pegado
 /// (manual §10-2: "included for future use and ignored by the terminal").
-pub fn parse_host(raw: &RawFields, _options: &ParseOptions) -> Result<HostMessage, ParseError> {
+pub fn parse_host(raw: &RawFields, options: &ParseOptions) -> Result<HostMessage, ParseError> {
     let head = raw.ascii_field(0)?;
     let Some(class) = head.chars().next() else {
         return Err(ParseError::malformed("campo de clase vacío"));
@@ -46,8 +49,26 @@ pub fn parse_host(raw: &RawFields, _options: &ParseOptions) -> Result<HostMessag
             Some(command) => Ok(HostMessage::TerminalCommand(command)),
             None => Ok(HostMessage::Unknown { raw: raw.clone() }),
         },
-        // Clases 3 (customización/TR interactivo/claves), 4 (Transaction
-        // Reply), 6 (EJ) y 8 (EMV) se incorporan en T1.4–T1.6.
+        '3' => {
+            let head = raw.ascii_field(3)?;
+            let mut chars = head.chars();
+            let Some(subclass) = chars.next() else {
+                return Err(ParseError::malformed("clase 3 sin sub-clase"));
+            };
+            match subclass {
+                '1' => match chars.next() {
+                    Some(identifier) => match CustomisationData::parse(raw, identifier, options)? {
+                        Some(data) => Ok(HostMessage::Customisation(data)),
+                        None => Ok(HostMessage::Unknown { raw: raw.clone() }),
+                    },
+                    // Sub-clase 1 sin identificador: no documentado.
+                    None => Ok(HostMessage::Unknown { raw: raw.clone() }),
+                },
+                // Sub-clases 2 (ITR), 3 (EKC) y 4 (Extended EKC) llegan en T1.6.
+                _ => Ok(HostMessage::Unknown { raw: raw.clone() }),
+            }
+        }
+        // Clase 4 (Transaction Reply) llega en T1.5; 6 (EJ) y 8 (EMV) después.
         _ => Ok(HostMessage::Unknown { raw: raw.clone() }),
     }
 }
@@ -76,6 +97,23 @@ mod tests {
     #[test]
     fn undocumented_command_should_be_unknown_not_error() {
         let raw = RawFields::parse(b"1\x1c\x1c\x1c9");
+        let msg = parse_host(&raw, &ParseOptions::default()).expect("estructura válida");
+        assert!(matches!(msg, HostMessage::Unknown { .. }));
+    }
+
+    #[test]
+    fn class_three_customisation_should_dispatch() {
+        let raw = RawFields::parse(b"3\x1c\x1c\x1c16\x1c0001");
+        let msg = parse_host(&raw, &ParseOptions::default()).expect("mensaje válido");
+        assert_eq!(
+            msg,
+            HostMessage::Customisation(CustomisationData::ConfigId(1))
+        );
+    }
+
+    #[test]
+    fn class_three_unknown_subclass_should_be_preserved() {
+        let raw = RawFields::parse(b"3\x1c\x1c\x1c91\x1cdatos");
         let msg = parse_host(&raw, &ParseOptions::default()).expect("estructura válida");
         assert!(matches!(msg, HostMessage::Unknown { .. }));
     }
