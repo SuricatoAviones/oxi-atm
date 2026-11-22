@@ -9,3 +9,6 @@ license.workspace = true
 # antes de tiempo para no generar warnings de "unused dependency"):
 # - fase 1 (parser): serde, thiserror (pines en [workspace.dependencies])
 [dependencies]
+
+[lints]
+workspace = true

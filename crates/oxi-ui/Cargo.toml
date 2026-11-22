@@ -9,3 +9,6 @@ license.workspace = true
 # - fase 6 (ensamblado/CLI): oxi-engine, oxi-net (path), tokio, serde,
 #   anyhow, tracing, tracing-subscriber
 [dependencies]
+
+[lints]
+workspace = true

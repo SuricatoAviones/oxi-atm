@@ -12,3 +12,16 @@ license = "MIT"
 # fase que los usa (ROADMAP): fase 1 serde/thiserror en oxi-core, fase 2
 # tokio/bytes en oxi-net, etc. Declararlos antes genera warnings de "unused
 # workspace dependency" en este toolchain.
+
+# Lints del workspace (skill rust-best-practices, Cap. 2): set curado.
+# `cargo clippy -- -D warnings` los vuelve errores en cada tarea del DoD.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+dbg_macro = "warn"
+redundant_clone = "warn"
+large_enum_variant = "warn"
+needless_collect = "warn"
+

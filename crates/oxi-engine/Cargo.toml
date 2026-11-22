@@ -9,3 +9,6 @@ license.workspace = true
 # - fase 3 (máquina de estados): oxi-core (path), serde, thiserror
 # Regla dura (AGENTS.md): JAMÁS tokio, I/O ni interfaz en este crate.
 [dependencies]
+
+[lints]
+workspace = true
