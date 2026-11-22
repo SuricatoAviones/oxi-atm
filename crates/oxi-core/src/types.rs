@@ -336,6 +336,27 @@ pub enum ScreenSelector {
 }
 
 impl ScreenSelector {
+    /// Forma del cable (§10-11 campo 'h'): 3 dígitos, `"0123"` entre
+    /// comillas o letra de grupo + 2/4 dígitos.
+    pub fn to_wire(self) -> String {
+        match self {
+            Self::Customer(id) => {
+                if id.value() <= 999 {
+                    format!("{:03}", id.value())
+                } else {
+                    format!("\"{:04}\"", id.value())
+                }
+            }
+            Self::Group { letter, digits } => {
+                if matches!(letter, 'E' | 'X' | 'Y' | 'Z' | 'u') {
+                    format!("{letter}{digits:04}")
+                } else {
+                    format!("{letter}{digits:02}")
+                }
+            }
+        }
+    }
+
     /// Extrae el id del inicio de un campo de pantalla, devolviendo el resto
     /// (datos de pantalla, posiblemente con teclado tras un GS).
     pub fn take(text: &str) -> Result<(Self, &str), ParseError> {

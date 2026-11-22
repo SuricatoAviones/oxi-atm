@@ -1,18 +1,48 @@
-//! `oxi-host-mock`: host falso NDC para probar oxi.
+//! Host falso NDC: baja customización sintética, pone el ATM en servicio y
+//! responde transacciones. Útil para la demo manual (fase 6) y los tests.
 //!
-//! Binario + librería: baja customización sintética, responde Transaction
-//! Requests (modo automático/moderado) y simula fallas de dispositivos.
-//! Los fixtures se construyen con código propio (regla de AGENTS.md).
+//! Uso:
+//! ```text
+//! cargo run -p oxi-host-mock -- --listen 127.0.0.1:9000 --approve
+//! ```
 
-fn main() {
-    println!("oxi-host-mock: host falso NDC (fase 5 del ROADMAP)");
+use std::time::Duration;
+
+use oxi_host_mock::{HostConfig, ScriptedHost};
+
+fn argument(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|arg| arg == flag)
+        .and_then(|index| args.get(index + 1))
+        .cloned()
 }
 
-#[cfg(test)]
-mod tests {
-    /// El nombre del binario debe ser `oxi-host-mock` (test humo de scaffolding).
-    #[test]
-    fn binary_name_should_be_oxi_host_mock() {
-        assert_eq!(env!("CARGO_PKG_NAME"), "oxi-host-mock");
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    let listen = argument(&args, "--listen").unwrap_or_else(|| "127.0.0.1:9000".into());
+    let approve = !args.iter().any(|arg| arg == "--reject");
+
+    let host = ScriptedHost::bind(&listen).await?;
+    let addr = host.local_addr()?;
+    println!(
+        "oxi-host-mock escuchando en {addr} ({})",
+        if approve { "aprobar" } else { "rechazar" }
+    );
+    println!("esperando la conexión del ATM (oxi)...");
+
+    loop {
+        let config = HostConfig {
+            approve,
+            idle_timeout: Duration::from_secs(30),
+        };
+        match host.run_once(&config).await {
+            Ok(report) => println!(
+                "sesión: {} frames ↓ / {} frames ↑, {} transacción(es), statuses={:?}",
+                report.frames_out, report.frames_in, report.transactions, report.statuses
+            ),
+            Err(err) => eprintln!("sesión terminada con error: {err}"),
+        }
+        println!("esperando otra conexión...");
     }
 }
