@@ -9,9 +9,12 @@ rust-version = "1.85"
 license = "MIT"
 
 # Los pines de dependencias ([workspace.dependencies]) se agregan junto con la
-# fase que los usa (ROADMAP): fase 1 serde/thiserror en oxi-core, fase 2
-# tokio/bytes en oxi-net, etc. Declararlos antes genera warnings de "unused
-# workspace dependency" en este toolchain.
+# fase que los usa (ROADMAP): fase 2 tokio/bytes en oxi-net, etc. Declararlos
+# antes genera warnings de "unused workspace dependency" en este toolchain.
+
+[workspace.dependencies]
+thiserror = "2"
+proptest = "1"
 
 # Lints del workspace (skill rust-best-practices, Cap. 2): set curado.
 # `cargo clippy -- -D warnings` los vuelve errores en cada tarea del DoD.
