@@ -5,9 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Dependencias previstas (se agregan en la fase que las usa):
-# - fase 2 (transporte): oxi-core (path), tokio, bytes, thiserror
+# Fase 2 (transporte): oxi-net trabaja con BYTES enmarcados; el parseo vive
+# en oxi-core (DESIGN §4: una sola fuente de verdad del parser), así que
+# este crate NO depende de oxi-core por ahora.
 [dependencies]
+bytes.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
 
-[lints]
-workspace = true
+[dev-dependencies]
+proptest.workspace = true
