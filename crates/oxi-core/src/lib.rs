@@ -6,12 +6,14 @@
 
 mod error;
 mod types;
+mod wire;
 
 pub use error::ParseError;
 pub use types::{
     CardReturnFlag, Fdk, FdkMask, Luno, Mcn, NoteCounts, PrintGroup, PrinterFlag, ScreenId,
     StateNumber, STATE_DISABLED,
 };
+pub use wire::{RawFields, FS, GS};
 
 /// Nombre del crate, para verificación de armado del workspace.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
