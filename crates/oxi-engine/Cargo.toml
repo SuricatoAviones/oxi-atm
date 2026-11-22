@@ -13,3 +13,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 oxi-host-mock = { path = "../oxi-host-mock" }
+
+[lints]
+workspace = true

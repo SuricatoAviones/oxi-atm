@@ -105,7 +105,8 @@ fn supply_counters_should_follow_table_9_8() {
     assert_eq!(&payload[4..11], "0000001", "un intento acumulado");
     // Notas en casete 1: 100 - 1 dispensada = 99.
     assert_eq!(&payload[11..16], "00099");
-    assert_eq!(&request.status_data.as_ref().unwrap()[..4], "0000");
+    let status_data = request.status_data.as_deref().expect("opción 15 activa");
+    assert_eq!(&status_data[..4], "0000");
 }
 
 /// Timer 09: tarjeta presentada y no retirada → captura + unsolicited 'D1'.
