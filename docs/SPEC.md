@@ -356,14 +356,14 @@ de menú estándar; **[PEND: Q7]** qué menús necesita el dueño.
 | Q8 | PIN | **Por defecto**: ISO-0 + 3DES con claves de prueba sintéticas, verificación remota; local (PEKEY), ISO-3/BANKSYS documentados como opciones |
 | Q9 | Fallas/unsolicited | **Simular TODAS las fallas** de los dispositivos modelados (§9-63…§9-91), inyectables por perfil |
 | Q11 | "Download" real del host | **Resuelto**: disponible en `reference/download/` (local, sin versionar) y verificado contra el manual. Tipos de estado usados por el driver real: **A, B, D, F, H, I, J, K, W, X, Y + Z** (extensiones). Sin E, G, C, M, R, S, T, V, b, k, m, `>`, w. ECPL con specific command reject (op. 12) y transaction status info en TRQ (op. 15) **activados**; FIT con verificación de PIN **remota** (PCKLN=0) |
+| Q12 | Date/Time | **Resuelto con el código del driver** (`reference/atm-driver`, repo público del dueño, clonado local): el archivo capturado es una plantilla; en runtime el host inserta la fecha con formato `yyyyMMddHHmmss` (14 chars, año de 4 dígitos + segundos) cuando el identificador es 'C'. Difiere del `YYMMDDHHMM` (10 chars) de §10-41 → **oxi acepta ambos formatos** y tolera vacío con warning. Nota: el campo "vacío" del ECPL es el LUNO — el driver inserta `cajero.Codigo` en runtime (mecanismo §10-21 campo 'h'); por eso el trace muestra LUNO 001 ecoado por el terminal |
 
 **Abiertas**
 
 | # | Pregunta | Impacto |
 |---|---|---|
-| Q12 | El download real manda **Date and Time Load con el campo vacío**, pero §10-41 lo exige obligatorio de 10 chars (YYMMDDHHMM). ¿Es intencional en tu driver? ¿oxi lo tolera (warning + reloj propio) o lo rechaza (specific reject)? | Parser/interpreter |
-| Q13 | ECPL opción 01 = `015` incluye el bit `004`, no documentado en el campo 'm' del CPL (§10-14 solo documenta 001/002/008). ¿Sabés qué significa en tu driver? | Config |
-| Q5 | ¿Qué hacer con los tipos de estado `P`, `Q`, `i`, `Z` legales en la descarga (§10-9) sin sección en el Cap. 2? ¿Los tratamos como inválidos → default close? | Intérprete (fase 3) |
+| Q13 | ECPL opción 01 = `015` incluye el bit `004`, no documentado en el campo 'm' del CPL (§10-14 solo documenta 001/002/008). El código del driver (local, `reference/atm-driver`) puede responderlo cuando lo analicemos a fondo. | Config |
+| Q5 | ¿Qué hacer con los tipos de estado `P`, `Q`, `i`, `Z` legales en la descarga (§10-9) sin sección en el Cap. 2? ¿Los tratamos como inválidos → default close? (`Z` ya resuelto: estado de extensión, usado por el driver real) | Intérprete (fase 3) |
 | Q6 | ¿La descarga real trae asociación pantalla↔teclado, o teclados locales estándar (2.06+)? | Modelo de teclados |
 | Q7 | ¿Qué funciones de supervisor usa tu host realmente (replenish, settlement, test cash)? | Alcance supervisor |
 | Q10 | ¿Default close state: tu customización usa un número concreto que debamos respetar? | Máquina de estados |
