@@ -9,8 +9,10 @@ set -euo pipefail
 # Raíz del repo: este script vive en scripts/.
 cd "$(dirname "$0")/.."
 
-# No pisar los artefactos de Windows (target/): dir propio para Linux.
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target-wsl}"
+# No pisar los artefactos de Windows (target/): dir propio para Linux, en el
+# filesystem NATIVO de WSL (compilar sobre /mnt/c es un orden de magnitud
+# más lento por el puente 9P).
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/oxi-atm-target}"
 
 # rustup vive en ~/.cargo/bin; el shell no-login de wsl -e no carga ~/.profile.
 export PATH="${HOME}/.cargo/bin:${PATH}"
