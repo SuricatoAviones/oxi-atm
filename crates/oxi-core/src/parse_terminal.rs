@@ -203,7 +203,7 @@ mod tests {
             tvn: None,
             top_of_receipt: '0',
             mcn: Mcn::new('\u{31}', false).expect("MCN válido"),
-            track2: Some(";5899410000000000=2512?".into()),
+            track2: Some(";9999990000000000=2512?".into()),
             track3: None,
             op_code: Some("AB      ".into()),
             amount: Some("00000100".into()),

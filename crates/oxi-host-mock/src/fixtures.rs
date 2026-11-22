@@ -102,7 +102,7 @@ pub fn customisation() -> Vec<HostMessage> {
 
 /// Tarjeta de prueba sintética (pista 2 con FIID en el offset 0 de la FIT).
 pub fn test_card() -> String {
-    ";5899410000000000=2512?".into()
+    ";9999990000000000=2512?".into()
 }
 
 /// Transaction Reply de respuesta a un TRQ: aprueba (dispensa 1 billete y

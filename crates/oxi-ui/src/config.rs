@@ -81,7 +81,7 @@ impl Default for SimConfig {
             },
             cards: vec![CardProfile {
                 name: "test".into(),
-                track2: ";5899410000000000=2512?".into(),
+                track2: ";9999990000000000=2512?".into(),
             }],
             security: SecurityConfigToml::default(),
         }

@@ -245,17 +245,17 @@ mod tests {
 
     /// Vector sintético calculado a mano:
     /// PIN field: `041234FFFFFFFFFF`; PAN block (12 menos significativos
-    /// de "5899411234567890" con relleno): `0000941123456789`; XOR →
-    /// `0412A0EEDCBA9876`.
+    /// de "9999991234567890" con relleno): `0000999123456789`; XOR →
+    /// `0412AD6EDCBA9876`.
     #[test]
     fn iso0_block_should_xor_pin_and_pan_fields() {
-        let block = iso0_pin_block("1234", "5899411234567890").expect("bloque válido");
-        assert_eq!(block, "0412A0EEDCBA9876");
+        let block = iso0_pin_block("1234", "9999991234567890").expect("bloque válido");
+        assert_eq!(block, "0412AD6EDCBA9876");
     }
 
     #[test]
     fn iso0_should_reject_short_pin() {
-        assert!(iso0_pin_block("123", "5899411234567890").is_err());
+        assert!(iso0_pin_block("123", "9999991234567890").is_err());
     }
 
     #[test]
@@ -266,8 +266,8 @@ mod tests {
     /// El PAN puede venir con separadores (pista 2 completa).
     #[test]
     fn iso0_should_ignore_track2_separators() {
-        let with_track = iso0_pin_block("1234", ";5899411234567890=2512").expect("válido");
-        let clean = iso0_pin_block("1234", "5899411234567890").expect("válido");
+        let with_track = iso0_pin_block("1234", ";9999991234567890=2512").expect("válido");
+        let clean = iso0_pin_block("1234", "9999991234567890").expect("válido");
         assert_eq!(with_track, clean);
     }
 
@@ -285,7 +285,7 @@ mod tests {
     /// ISO-0 original (lo que verificará el host con su HSM).
     #[test]
     fn pin_block_should_roundtrip_through_des() {
-        let iso0 = iso0_pin_block("1234", "5899411234567890").expect("iso0");
+        let iso0 = iso0_pin_block("1234", "9999991234567890").expect("iso0");
         let key = hex_decode("0F1E2D3C4B5A6978").expect("clave");
         let encrypted = encrypt_pin_block(&iso0, &key, KeyMode::Single).expect("cifra");
         assert_eq!(encrypted.len(), 16);
@@ -297,7 +297,7 @@ mod tests {
     /// 3DES EDE de doble longitud: roundtrip con clave de 16 bytes.
     #[test]
     fn triple_des_should_roundtrip() {
-        let iso0 = iso0_pin_block("9876", "5899410000000000").expect("iso0");
+        let iso0 = iso0_pin_block("9876", "9999990000000000").expect("iso0");
         let key = hex_decode("0F1E2D3C4B5A69788796A5B4C3D2E1F0").expect("clave");
         let encrypted = encrypt_pin_block(&iso0, &key, KeyMode::Triple).expect("cifra");
         let decrypted = decrypt_pin_block(&encrypted, &key, KeyMode::Triple).expect("descifra");
