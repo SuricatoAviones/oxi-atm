@@ -193,11 +193,11 @@ descarga se hace por State Tables Load (§10-9); el primer char de los datos es 
 |---|---|---|
 | A | Lectura de tarjeta (recomendado como estado 000); inicializa buffers; define pistas/chip a leer y condiciones de lectura | §2-4 |
 | B | Entrada de PIN (4–16 dígitos), verificación local o remota, reintentos | §2-8 |
-| C | Dispensador de sobres | §2-11 |
+| C | Dispensador de sobres (sin hardware de sobres: toma el next state inmediato) | §2-11 |
 | D | Pre-carga del buffer de op-code (máscaras por tecla) | §2-12 |
-| E | Selección de 4 FDK derechas (A–D) | §2-15 |
+| E | Selección de 4 FDK derechas (A–D); keycode en el op-code (entrada 9); opción 7a no modelada | §2-15 |
 | F | Entrada de importe (8/12 dígitos) | §2-17 |
-| G | Chequeo de importe (4 condiciones: decimal cero, límite, múltiplo, dispensable) | §2-19 |
+| G | Chequeo de importe (000 decimal cero, 001 cero/límite, 002 múltiplo; 003 exige cassette mapping y hace default close) | §2-19 |
 | H | Entrada de información a buffer B/C | §2-23 |
 | I | Transaction Request + ejecución del Reply | §2-25 |
 | J | Close (entrega/captura de tarjeta, recibo, statement) | §2-30 |
@@ -383,6 +383,7 @@ de menú estándar; **[PEND: Q7]** qué menús necesita el dueño.
 | Q10 | ¿Default close state: tu customización usa un número concreto que debamos respetar? | Máquina de estados |
 | Q14 | ITR: el manual no especifica cómo representar una FDK en buffer B ni el relleno (sólo mínimo 3 chars y `T`/`E` finales). Convención del simulador: FDK = letra A–I, dígitos tal cual, relleno con ceros a la izquierda; TVN/MAC vacíos. Se ajusta si aparece una traza ITR real. | ITR (fase 8) |
 | Q15 | Override Reserved Screens: el manual limita `D0000`–`D0010` y el valor `000`–`999`, pero no publica el mapping `D`→pantalla reservada. El simulador aplica el override cuando una pantalla referencia `D0000`–`D0010`; validar con una traza real. | Pantallas reservadas (fase 8) |
+| Q16 | G condición 000: el manual dice que la entrada 6 (decimales) se ignora con condición 000, pero también evalúa “a la derecha del punto decimal”. El simulador usa la entrada 6 como posición decimal; validar con una traza real. | Amount check (fase 8) |
 
 ---
 

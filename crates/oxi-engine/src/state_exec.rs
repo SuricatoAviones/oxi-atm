@@ -51,8 +51,11 @@ pub(crate) fn enter_state(terminal: &mut Terminal, number: StateNumber) -> Vec<A
     match table.state_type {
         'A' => state_card_read(terminal, &table),
         'B' => state_pin_entry(terminal, &table),
+        'C' => state_envelope_dispenser(terminal, &table),
         'D' => state_preset_opcode(terminal, &table),
+        'E' => state_four_fdk(terminal, &table),
         'F' => state_amount_entry(terminal, &table),
+        'G' => state_amount_check(terminal, &table),
         'H' => state_info_entry(terminal, &table),
         'I' => state_transaction_request(terminal, &table),
         'J' => state_close(terminal, &table),
@@ -166,6 +169,19 @@ pub(crate) fn on_fdk_pressed(terminal: &mut Terminal, fdk: Fdk, next: StateNumbe
                             terminal.buffers_mut().opcode[bit as usize] = fdk.as_char();
                         }
                     }
+                }
+            }
+        }
+        // E: guarda el keycode A-D en la posición del op-code indicada por la
+        // entrada 9 (§2-15, Tabla 2-9). La opción 7a (teclas izquierdas) no
+        // está modelada; se usan las FDK A-D.
+        Some('E') => {
+            if let Some(table) = terminal.states().get(&current).cloned() {
+                if let Some(location) = entry(&table.entries, 9)
+                    .and_then(|text| text.parse::<u8>().ok())
+                    .filter(|value| *value <= 7)
+                {
+                    terminal.buffers_mut().opcode[location as usize] = fdk.as_char();
                 }
             }
         }
@@ -409,6 +425,21 @@ fn state_card_read(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action
     actions
 }
 
+/// C - Envelope Dispenser (§2-11, Tabla 2-6).
+///
+/// El hardware virtual no modela envelope dispenser: el manual indica que en
+/// ese caso el estado no hace nada y toma el next state inmediatamente.
+fn state_envelope_dispenser(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
+    let mut actions = vec![Action::Log(
+        "estado C: sin envelope dispenser; se toma el next state inmediato".into(),
+    )];
+    match entry_state(&table.entries, 2) {
+        Some(next) => actions.extend(enter_state(terminal, next)),
+        None => actions.extend(default_close(terminal)),
+    }
+    actions
+}
+
 /// D - Pre-Set Operation Code Buffer (§2-12): aplica máscaras y transiciona.
 fn state_preset_opcode(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
     let Some(next) = entry_state(&table.entries, 2) else {
@@ -439,6 +470,28 @@ fn amount_width(terminal: &Terminal) -> usize {
     }
 }
 
+/// E - Four FDK Selection Function (§2-15, Tabla 2-9).
+fn state_four_fdk(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
+    let mut mask = 0u8;
+    for offset in 0..4usize {
+        if entry_state(&table.entries, 5 + offset).is_some() {
+            mask |= 1 << offset;
+        }
+    }
+    terminal.set_pending(Some(Pending::Keys {
+        mask: FdkMask::new(mask),
+    }));
+    terminal.set_fdk_next_from_entries(&table.entries, 5);
+    terminal.set_timeout_next(entry_state(&table.entries, 3));
+    terminal.set_cancel_next(entry_state(&table.entries, 4));
+    let mut actions = Vec::new();
+    if let Some(screen) = entry_screen(&table.entries, 2) {
+        actions.extend(terminal.set_screen(Some(screen)));
+    }
+    actions.push(start_timer(terminal, 0));
+    actions
+}
+
 /// F - Amount Entry (§2-17, Tabla 2-10).
 fn state_amount_entry(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
     terminal.set_pending(Some(Pending::Digits {
@@ -454,6 +507,83 @@ fn state_amount_entry(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Act
         actions.extend(terminal.set_screen(Some(screen)));
     }
     actions.push(start_timer(terminal, 0));
+    actions
+}
+
+/// G - Amount Check (§2-19, Tabla 2-11).
+fn state_amount_check(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
+    let Some(condition) = entry(&table.entries, 8)
+        .and_then(|text| text.parse::<u8>().ok())
+        .filter(|value| *value <= 3)
+    else {
+        return default_close(terminal);
+    };
+    let Some(buffer) = entry(&table.entries, 4)
+        .and_then(|text| text.parse::<u8>().ok())
+        .filter(|value| *value <= 2)
+    else {
+        return default_close(terminal);
+    };
+    let Some(decimals) = entry(&table.entries, 6)
+        .and_then(|text| text.parse::<u8>().ok())
+        .filter(|value| *value <= 4)
+    else {
+        return default_close(terminal);
+    };
+
+    // La condición 003 exige la Dispenser Currency Cassette Mapping Table,
+    // que todavía no está tipada (fase 4 la conserva cruda). El manual manda
+    // default close si la tabla no está disponible; es nuestro caso.
+    if condition == 3 {
+        return vec![Action::Log(
+            "G: condición 003 requiere cassette mapping; no disponible → default close".into(),
+        )]
+        .into_iter()
+        .chain(default_close(terminal))
+        .collect();
+    }
+
+    let text = match buffer {
+        0 => terminal.buffers().amount.as_str(),
+        1 => terminal.buffers().b.as_str(),
+        _ => terminal.buffers().c.as_str(),
+    };
+    let valid = text.bytes().all(|byte| byte.is_ascii_digit());
+    let value = if text.is_empty() {
+        0
+    } else {
+        text.parse::<u64>().unwrap_or(0)
+    };
+    let factor = 10u64.pow(u32::from(decimals));
+    let whole = value % factor == 0;
+    let short_enough = buffer == 0 || text.len() <= 12;
+    let result = valid
+        && short_enough
+        && match condition {
+            0 => whole,
+            1 => value != 0 && whole,
+            2 => {
+                let multiple = entry(&table.entries, 5)
+                    .and_then(|text| text.parse::<u64>().ok())
+                    .unwrap_or(0);
+                multiple != 0 && whole && (value / factor) % multiple == 0
+            }
+            _ => false,
+        };
+
+    let mut actions = vec![Action::Log(format!(
+        "G: buffer {buffer}, valor {value}, decimales {decimals}, condición {condition} → {}",
+        if result { "true" } else { "false" }
+    ))];
+    let next = if result {
+        entry_state(&table.entries, 2)
+    } else {
+        entry_state(&table.entries, 3)
+    };
+    match next {
+        Some(next) => actions.extend(enter_state(terminal, next)),
+        None => actions.extend(default_close(terminal)),
+    }
     actions
 }
 
@@ -983,6 +1113,95 @@ mod interpreter_tests {
         // Valor de C = 030 + 3 ceros = "030000" → importe de 8: "00030000".
         assert_eq!(terminal.buffers().amount, "00030000");
         assert!(displays_screen(&actions, 52), "transiciona al J de 027");
+    }
+
+    /// E: la FDK seleccionada escribe su keycode en el op-code (§2-15).
+    #[test]
+    fn state_e_should_store_keycode_and_follow_fdk_next_state() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'E', "015200201010011255255003"),
+            table(10, 'J', "052255052052052052052000"),
+            table(11, 'J', "053255053053053053053000"),
+        ]);
+        let actions =
+            crate::state_exec::enter_state(&mut terminal, StateNumber::new(0).expect("en rango"));
+        assert!(displays_screen(&actions, 15), "pantalla del estado E");
+
+        let actions = terminal.handle(Event::KeyPressed(Key::Fdk(Fdk::B)));
+        assert_eq!(terminal.buffers().opcode[3], 'B');
+        assert!(displays_screen(&actions, 53), "FDK B → estado 011");
+    }
+
+    /// G: condición 002 (múltiplo entero) elige true/false (§2-19).
+    #[test]
+    fn state_g_should_check_integer_multiple() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'G', "200201000005002001002000"),
+            table(200, 'J', "052255052052052052052000"),
+            table(201, 'J', "053255053053053053053000"),
+        ]);
+        terminal.buffers_mut().amount = "00000500".into();
+        let actions =
+            crate::state_exec::enter_state(&mut terminal, StateNumber::new(0).expect("en rango"));
+        assert!(displays_screen(&actions, 52), "500 es múltiplo de 5");
+
+        let mut terminal = terminal_with(vec![
+            table(0, 'G', "200201000005002001002000"),
+            table(200, 'J', "052255052052052052052000"),
+            table(201, 'J', "053255053053053053053000"),
+        ]);
+        terminal.buffers_mut().amount = "00000100".into();
+        let actions =
+            crate::state_exec::enter_state(&mut terminal, StateNumber::new(0).expect("en rango"));
+        assert!(displays_screen(&actions, 53), "100 no es múltiplo de 5");
+    }
+
+    /// G: condición 001 rechaza importe cero y buffer B >12 dígitos.
+    #[test]
+    fn state_g_condition_001_should_reject_zero_and_long_b() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'G', "200201000000002001001000"),
+            table(200, 'J', "052255052052052052052000"),
+            table(201, 'J', "053255053053053053053000"),
+        ]);
+        terminal.buffers_mut().amount = "00000000".into();
+        let actions =
+            crate::state_exec::enter_state(&mut terminal, StateNumber::new(0).expect("en rango"));
+        assert!(displays_screen(&actions, 53), "cero → false");
+
+        let mut terminal = terminal_with(vec![
+            table(0, 'G', "200201001005002001001000"),
+            table(200, 'J', "052255052052052052052000"),
+            table(201, 'J', "053255053053053053053000"),
+        ]);
+        terminal.buffers_mut().b = "1234567890123".into();
+        let actions =
+            crate::state_exec::enter_state(&mut terminal, StateNumber::new(0).expect("en rango"));
+        assert!(displays_screen(&actions, 53), "B >12 dígitos → false");
+    }
+
+    /// G: condición 003 sin cassette mapping → default close documentado.
+    #[test]
+    fn state_g_condition_003_without_mapping_should_default_close() {
+        let mut terminal = terminal_with(vec![table(0, 'G', "200201000005002001003000")]);
+        let actions =
+            crate::state_exec::enter_state(&mut terminal, StateNumber::new(0).expect("en rango"));
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            Action::Log(line) if line.contains("condición 003")
+        )));
+    }
+
+    /// C: sin envelope dispenser, toma el next state inmediato (§2-11).
+    #[test]
+    fn state_c_without_dispenser_should_take_next_state() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'C', "010000000000000000000000"),
+            table(10, 'J', "052255052052052052052000"),
+        ]);
+        let actions =
+            crate::state_exec::enter_state(&mut terminal, StateNumber::new(0).expect("en rango"));
+        assert!(displays_screen(&actions, 52), "C → 010 (J)");
     }
 
     /// Cancel usa el cancel next state del estado corriente.
