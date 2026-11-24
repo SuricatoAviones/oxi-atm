@@ -17,6 +17,12 @@ pub enum Event {
     PoweredOn,
     /// Mensaje completo del host.
     HostMessage(oxi_core::HostMessage),
+    /// El runtime no pudo parsear un frame; `reject` es el código
+    /// valor/calificador de Specific Command Reject (Tabla 10-37).
+    HostParseError {
+        /// Código, p. ej. "B08" o "A01".
+        reject: String,
+    },
     /// Tecla del cardholder u operador.
     KeyPressed(Key),
     /// Tarjeta insertada con las pistas disponibles.

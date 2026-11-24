@@ -117,7 +117,8 @@ fn extended_key_change_during_transaction_should_be_rejected() {
     assert!(actions.iter().any(|action| matches!(
         action,
         oxi_engine::Action::Send(TerminalMessage::SolicitedStatus {
-            descriptor: oxi_core::StatusDescriptor::CommandReject,
+            descriptor: oxi_core::StatusDescriptor::SpecificCommandReject
+                | oxi_core::StatusDescriptor::CommandReject,
             ..
         })
     )));

@@ -46,8 +46,18 @@ pub enum CustomisationData {
     /// 'E': Dispenser Currency Cassette Mapping Table (manual §10-51). Crudo
     /// en v1; se tipa en la fase de hardware.
     CassetteMapping(Vec<Vec<u8>>),
-    /// 'G': Override Reserved Screens (manual §10-55). Crudo en v1.
-    OverrideReservedScreens(Vec<Vec<u8>>),
+    /// 'G': Override Reserved Screens (manual §10-55).
+    OverrideReservedScreens(Vec<ScreenOverride>),
+}
+
+/// Override de una pantalla reservada (§10-55, Tabla 10-15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenOverride {
+    /// Referencia reservada `D0000`–`D0010` (0–10).
+    pub reserved: u8,
+    /// Pantalla de usuario 000–999 que reemplaza a la reservada; `None`
+    /// cuando el campo 'i' se omitió o era inválido (revierte, Nota 34).
+    pub user_screen: Option<u16>,
 }
 
 /// Una pantalla descargada: id + datos (+ teclado touch opcional tras GS).
@@ -175,7 +185,7 @@ impl CustomisationData {
             'B' => Ok(Some(Self::MacFieldSelection(Self::raw_payload(raw)))),
             'C' => Self::parse_date_time(raw, options).map(|v| Some(Self::DateTime(v))),
             'E' => Ok(Some(Self::CassetteMapping(Self::raw_payload(raw)))),
-            'G' => Ok(Some(Self::OverrideReservedScreens(Self::raw_payload(raw)))),
+            'G' => Self::parse_overrides(raw).map(|v| Some(Self::OverrideReservedScreens(v))),
             _ => Ok(None),
         }
     }
@@ -453,6 +463,78 @@ impl CustomisationData {
             luno,
             options: ecpl_options,
         })
+    }
+
+    /// 'G': Override Reserved Screens (manual §10-55, Tabla 10-15).
+    /// Pares `D0000-D0010` + pantalla de usuario opcional (000-999).
+    fn parse_overrides(raw: &RawFields) -> Result<Vec<ScreenOverride>, ParseError> {
+        let fields = raw.fields();
+        if fields.len() <= 4 {
+            return Err(ParseError::malformed("Override sin pantalla reservada"));
+        }
+        let mut overrides = Vec::new();
+        let mut index = 4;
+        while index < fields.len() {
+            let Ok(head) = raw.ascii_field(index) else {
+                return Err(ParseError::invalid_field(
+                    "Override screen",
+                    "la pantalla reservada no es ASCII",
+                ));
+            };
+            if head.is_empty() {
+                // Tolerar un FS final vacío; un hueco en el medio es error.
+                if index + 1 >= fields.len() {
+                    break;
+                }
+                return Err(ParseError::malformed("Override sin pantalla reservada"));
+            }
+            let mut chars = head.chars();
+            if chars.next() != Some('D') {
+                return Err(ParseError::invalid_field(
+                    "Override screen",
+                    format!("'{head}': debe ser D0000-D0010 (§10-55)"),
+                ));
+            }
+            let digits: String = chars.collect();
+            if digits.len() != 4 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(ParseError::invalid_field(
+                    "Override screen",
+                    format!("'{head}': debe ser D0000-D0010 (§10-55)"),
+                ));
+            }
+            let reserved: u16 = digits.parse().map_err(|_| {
+                ParseError::invalid_field("Override screen", format!("'{head}' no numérico"))
+            })?;
+            if reserved > 10 {
+                return Err(ParseError::invalid_field(
+                    "Override screen",
+                    format!("'{head}': fuera de D0000-D0010 (§10-55)"),
+                ));
+            }
+
+            // Campo 'i' opcional. Un valor inválido no es reject: revierte a la
+            // reservada, según Table Note 34.
+            let user_screen = fields.get(index + 1).and_then(|field| {
+                let text = std::str::from_utf8(field).ok()?;
+                if text.len() != 3 || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return None;
+                }
+                text.parse::<u16>().ok()
+            });
+            overrides.push(ScreenOverride {
+                reserved: reserved as u8,
+                user_screen,
+            });
+            index += if fields.get(index + 1).is_some() {
+                2
+            } else {
+                1
+            };
+        }
+        if overrides.is_empty() {
+            return Err(ParseError::malformed("Override sin pantalla reservada"));
+        }
+        Ok(overrides)
     }
 
     /// 'C': decisión Q12 del SPEC — 10 chars del manual por defecto; 14 chars
@@ -980,6 +1062,49 @@ mod tests {
     fn date_time_invalid_month_should_fail() {
         let raw = raw(b"3\x1c\x1c\x1c1C\x1c2513312359");
         assert!(CustomisationData::parse(&raw, 'C', &strict()).is_err());
+    }
+
+    #[test]
+    fn override_should_parse_pairs_and_revert() {
+        let raw = raw(b"3\x1c\x1c\x1c1G\x1cD0000\x1c025\x1cD0001\x1c");
+        let data = CustomisationData::parse(&raw, 'G', &strict())
+            .expect("mensaje válido")
+            .expect("identificador 'G'");
+        let CustomisationData::OverrideReservedScreens(overrides) = data else {
+            panic!("debería ser OverrideReservedScreens");
+        };
+        assert_eq!(
+            overrides,
+            vec![
+                ScreenOverride {
+                    reserved: 0,
+                    user_screen: Some(25),
+                },
+                ScreenOverride {
+                    reserved: 1,
+                    user_screen: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn override_should_reject_screen_outside_d0000_d0010() {
+        let raw = raw(b"3\x1c\x1c\x1c1G\x1cD0011\x1c025");
+        let error = CustomisationData::parse(&raw, 'G', &strict()).expect_err("fuera de rango");
+        assert_eq!(error.reject_code(), "B18");
+    }
+
+    #[test]
+    fn override_invalid_value_should_revert_not_reject() {
+        let raw = raw(b"3\x1c\x1c\x1c1G\x1cD0002\x1cABC");
+        let data = CustomisationData::parse(&raw, 'G', &strict())
+            .expect("valor inválido revierte (Nota 34)")
+            .expect("identificador 'G'");
+        let CustomisationData::OverrideReservedScreens(overrides) = data else {
+            panic!("debería ser OverrideReservedScreens");
+        };
+        assert_eq!(overrides[0].user_screen, None);
     }
 
     // ---- crudos (B/E/G) e identificadores desconocidos ----

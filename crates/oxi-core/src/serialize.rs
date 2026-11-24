@@ -150,7 +150,16 @@ fn serialize_customisation(data: &CustomisationData) -> Result<Vec<u8>, ParseErr
             ('C', vec![value.into_bytes()])
         }
         CustomisationData::CassetteMapping(fields) => ('E', fields.clone()),
-        CustomisationData::OverrideReservedScreens(fields) => ('G', fields.clone()),
+        CustomisationData::OverrideReservedScreens(overrides) => {
+            let mut payload = Vec::new();
+            for over in overrides {
+                payload.push(format!("D{:04}", over.reserved).into_bytes());
+                if let Some(user) = over.user_screen {
+                    payload.push(format!("{user:03}").into_bytes());
+                }
+            }
+            ('G', payload)
+        }
     };
     header(
         "3",
@@ -235,7 +244,7 @@ const _: u8 = FS;
 
 #[cfg(test)]
 mod tests {
-    use crate::customisation::{Ecpl, EcplOption, FitDef, ScreenDef};
+    use crate::customisation::{Ecpl, EcplOption, FitDef, ScreenDef, ScreenOverride};
     use crate::types::{
         Fdk, Mcn, NoteCounts, PrintGroup, PrinterFlag, ScreenId, ScreenSelector, StateNumber,
     };
@@ -262,6 +271,22 @@ mod tests {
             TerminalCommand::SendConfigurationInformation {
                 modifier: "7".into(),
             },
+        ));
+    }
+
+    #[test]
+    fn override_reserved_screens_should_roundtrip() {
+        roundtrip(HostMessage::Customisation(
+            CustomisationData::OverrideReservedScreens(vec![
+                ScreenOverride {
+                    reserved: 0,
+                    user_screen: Some(25),
+                },
+                ScreenOverride {
+                    reserved: 10,
+                    user_screen: None,
+                },
+            ]),
         ));
     }
 

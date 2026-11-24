@@ -99,7 +99,7 @@ pub(crate) struct Config {
     luno: Luno,
     /// Opciones del ECPL: número → código (se preservan todas; las no
     /// documentadas se ignoran con warning, SPEC Q13).
-    options: HashMap<u8, u16>,
+    pub(crate) options: HashMap<u8, u16>,
     /// Timers del CPL en ticks de 800 ms.
     timers_cpl: HashMap<u8, u8>,
     /// Timers del ECPL en segundos.
@@ -156,6 +156,10 @@ pub struct Terminal {
     awaiting_reply: bool,
     /// Pantalla mostrada actualmente (para el runtime/UI).
     screen: Option<ScreenSelector>,
+    /// Overrides de pantallas reservadas D0000-D0010 → screen 000-999
+    /// (manual §10-55). El manual no publica el mapping D→reservada; se
+    /// aplica cuando una pantalla referencia D0000-D0010 (SPEC Q15).
+    screen_overrides: BTreeMap<u8, u16>,
     /// Next state por FDK del estado corriente (F/H/X/Y).
     fdk_next: HashMap<char, StateNumber>,
     /// Salida por time-out del estado corriente (se usa en T3.7).
@@ -218,6 +222,7 @@ impl Terminal {
             pending: None,
             awaiting_reply: false,
             screen: None,
+            screen_overrides: BTreeMap::new(),
             fdk_next: HashMap::new(),
             timeout_next: None,
             cancel_next: None,
@@ -325,6 +330,7 @@ impl Terminal {
         match event {
             Event::PoweredOn => self.handle_powered_on(),
             Event::HostMessage(message) => crate::host_ops::handle_host(self, message),
+            Event::HostParseError { reject } => crate::host_ops::handle_parse_error(self, &reject),
             Event::KeyPressed(key) => self.handle_key(key),
             Event::CardInserted(card) => self.handle_card_inserted(card),
             Event::CardTaken => {
@@ -604,8 +610,29 @@ impl Terminal {
     }
 
     pub(crate) fn set_screen(&mut self, screen: Option<ScreenSelector>) -> Vec<Action> {
+        let screen = screen.map(|selector| self.resolve_screen_override(selector));
         self.screen = screen;
         vec![Action::Display(screen)]
+    }
+
+    /// Aplica un override D0000-D0010 si la pantalla lo referencia (§10-55).
+    fn resolve_screen_override(&self, screen: ScreenSelector) -> ScreenSelector {
+        let ScreenSelector::Group {
+            letter: 'D',
+            digits,
+        } = screen
+        else {
+            return screen;
+        };
+        if digits > 10 {
+            return screen;
+        }
+        let Some(user) = self.screen_overrides.get(&(digits as u8)) else {
+            return screen;
+        };
+        oxi_core::ScreenId::new(*user)
+            .map(ScreenSelector::Customer)
+            .unwrap_or(screen)
     }
 
     pub(crate) fn set_config_id(&mut self, id: u16) {
@@ -996,10 +1023,20 @@ pub(crate) fn apply_customisation(terminal: &mut Terminal, data: CustomisationDa
                 fields.len()
             ))];
         }
-        CustomisationData::OverrideReservedScreens(fields) => {
+        CustomisationData::OverrideReservedScreens(overrides) => {
+            let count = overrides.len();
+            for over in overrides {
+                match over.user_screen {
+                    Some(user) => {
+                        terminal.screen_overrides.insert(over.reserved, user);
+                    }
+                    None => {
+                        terminal.screen_overrides.remove(&over.reserved);
+                    }
+                }
+            }
             return vec![Action::Log(format!(
-                "override de pantallas reservadas ({} campos): no soportado en v1",
-                fields.len()
+                "override de pantallas reservadas: {count} entrada(s)"
             ))];
         }
     }
@@ -1057,7 +1094,7 @@ pub(crate) fn ready_action(terminal: &Terminal, after_reply: bool) -> Action {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxi_core::StateNumber;
+    use oxi_core::{ScreenOverride, StateNumber};
 
     #[test]
     fn buffers_default_should_be_zero_and_space_filled() {
@@ -1153,5 +1190,45 @@ mod tests {
             )),
             "debe ejecutar el estado de cierre 200: {actions:?}"
         );
+    }
+
+    #[test]
+    fn override_d0000_should_replace_the_displayed_screen() {
+        let mut terminal = Terminal::new();
+        let _ = apply_customisation(
+            &mut terminal,
+            CustomisationData::OverrideReservedScreens(vec![ScreenOverride {
+                reserved: 0,
+                user_screen: Some(25),
+            }]),
+        );
+        let actions = terminal.set_screen(Some(ScreenSelector::Group {
+            letter: 'D',
+            digits: 0,
+        }));
+        let expected = ScreenSelector::Customer(oxi_core::ScreenId::new(25).expect("en rango"));
+        assert_eq!(terminal.screen(), Some(expected));
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::Display(Some(ScreenSelector::Customer(id)))] if id.value() == 25
+        ));
+    }
+
+    #[test]
+    fn override_without_value_should_revert_to_reserved_reference() {
+        let mut terminal = Terminal::new();
+        let _ = apply_customisation(
+            &mut terminal,
+            CustomisationData::OverrideReservedScreens(vec![ScreenOverride {
+                reserved: 0,
+                user_screen: None,
+            }]),
+        );
+        let reference = ScreenSelector::Group {
+            letter: 'D',
+            digits: 0,
+        };
+        let _ = terminal.set_screen(Some(reference));
+        assert_eq!(terminal.screen(), Some(reference));
     }
 }
