@@ -7,8 +7,8 @@ probar hosts y drivers de ATM sin necesidad de un cajero físico.
 > completadas** (parser, red, máquina de estados, hardware virtual, host de
 > pruebas, CLI, seguridad de PIN y GUI). La fase 8 (refinos de protocolo) está
 > **en progreso**: T8.1 (ITR), T8.2 (rechazos finos + Override), T8.3
-> (E/G/C) y T8.4a (R/S) completados; quedan T/b/m y teclado. Ver
-> [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> (E/G/C), T8.4a (R/S) y T8.4b (T/b/m) completados; queda el teclado/Q6.
+> Ver [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 

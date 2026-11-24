@@ -280,6 +280,14 @@ impl Terminal {
                     masked: false,
                 }),
             },
+            Some(Pending::T { .. }) | Some(Pending::Csp { .. }) => Some(InputEcho {
+                text: "X".repeat(self.buffers.pin.chars().count().min(30)),
+                masked: true,
+            }),
+            Some(Pending::PinLanguage { .. }) => Some(InputEcho {
+                text: "*".repeat(self.buffers.pin.chars().count().min(30)),
+                masked: true,
+            }),
             Some(Pending::Pin { .. }) => Some(InputEcho {
                 text: "X".repeat(self.buffers.pin.chars().count().min(30)),
                 masked: true,
@@ -365,6 +373,15 @@ impl Terminal {
         // salidas del estado I ni por las máscaras de state table (§10-79).
         if matches!(self.pending, Some(Pending::Itr { .. })) {
             return self.handle_itr_key(key);
+        }
+        if matches!(self.pending, Some(Pending::T { .. })) {
+            return self.handle_t_key(key);
+        }
+        if matches!(self.pending, Some(Pending::Csp { .. })) {
+            return self.handle_csp_key(key);
+        }
+        if matches!(self.pending, Some(Pending::PinLanguage { .. })) {
+            return self.handle_pin_language_key(key);
         }
         if key == Key::Cancel {
             return crate::state_exec::on_cancel(self);
@@ -542,14 +559,246 @@ impl Terminal {
         actions
     }
 
+    /// T: captura temprana de PIN mientras se espera la tarjeta (§2-52).
+    fn handle_t_key(&mut self, key: Key) -> Vec<Action> {
+        let Some(Pending::T {
+            clear_mask,
+            accept_mask,
+            accepted,
+        }) = self.pending.clone()
+        else {
+            return Vec::new();
+        };
+        match key {
+            Key::Digit(digit) => {
+                if self.buffers.pin.len() < 16 {
+                    self.buffers.pin.push(digit);
+                }
+            }
+            Key::Clear => self.buffers.pin.clear(),
+            Key::Enter => {
+                if accept_mask & 1 != 0 {
+                    self.pending = Some(Pending::T {
+                        clear_mask,
+                        accept_mask,
+                        accepted: true,
+                    });
+                }
+            }
+            Key::Fdk(fdk) => {
+                let Some(bit) = fdk_mask_bit(fdk) else {
+                    return Vec::new();
+                };
+                if clear_mask & (1 << bit) != 0 {
+                    self.buffers.pin.clear();
+                } else if accept_mask & (1 << bit) != 0 {
+                    self.pending = Some(Pending::T {
+                        clear_mask,
+                        accept_mask,
+                        accepted: true,
+                    });
+                }
+            }
+            _ => {}
+        }
+        let _ = accepted;
+        Vec::new()
+    }
+
+    /// b: primera y segunda entrada de un PIN elegido por el cardholder.
+    fn handle_csp_key(&mut self, key: Key) -> Vec<Action> {
+        let Some(Pending::Csp {
+            second,
+            first_pin,
+            attempts_left,
+            first_screen,
+            second_screen,
+            mismatch_screen,
+            good_next,
+            fail_next,
+        }) = self.pending.clone()
+        else {
+            return Vec::new();
+        };
+
+        match key {
+            Key::Digit(digit) => {
+                if self.buffers.pin.len() < 16 {
+                    self.buffers.pin.push(digit);
+                }
+                Vec::new()
+            }
+            Key::Clear => {
+                self.buffers.pin.clear();
+                Vec::new()
+            }
+            Key::Enter | Key::Fdk(Fdk::A) => {
+                if !second {
+                    let first_pin = self.buffers.pin.clone();
+                    self.buffers.pin.clear();
+                    self.pending = Some(Pending::Csp {
+                        second: true,
+                        first_pin,
+                        attempts_left,
+                        first_screen,
+                        second_screen,
+                        mismatch_screen,
+                        good_next,
+                        fail_next,
+                    });
+                    let mut actions = Vec::new();
+                    if let Some(screen) = second_screen {
+                        actions.extend(self.set_screen(Some(screen)));
+                    }
+                    return actions;
+                }
+
+                let second_pin = self.buffers.pin.clone();
+                if first_pin == second_pin {
+                    let pan = self
+                        .card()
+                        .and_then(|card| card.track2.clone())
+                        .unwrap_or_default();
+                    match self.build_pin_block(&second_pin, &pan) {
+                        Ok(block) => {
+                            self.buffers_mut().pin_block = Some(block);
+                            return self.enter_or_close(good_next);
+                        }
+                        Err(err) => {
+                            let mut actions =
+                                vec![Action::Log(format!("CSP: PIN block no formado: {err}"))];
+                            actions.extend(self.enter_or_close(fail_next));
+                            return actions;
+                        }
+                    }
+                }
+
+                if matches!(attempts_left, Some(1)) {
+                    return self.enter_or_close(fail_next);
+                }
+                let attempts_left = attempts_left.map(|value| value - 1);
+                self.buffers.pin.clear();
+                self.pending = Some(Pending::Csp {
+                    second: false,
+                    first_pin: String::new(),
+                    attempts_left,
+                    first_screen,
+                    second_screen,
+                    mismatch_screen,
+                    good_next,
+                    fail_next,
+                });
+                let mut actions = Vec::new();
+                if let Some(screen) = mismatch_screen.or(first_screen) {
+                    actions.extend(self.set_screen(Some(screen)));
+                }
+                actions
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// m: PIN remoto + selección de idioma por FDK (§2-71).
+    fn handle_pin_language_key(&mut self, key: Key) -> Vec<Action> {
+        let Some(Pending::PinLanguage {
+            max,
+            no_pin_next,
+            remote_next,
+            active_mask,
+            default_mask,
+        }) = self.pending.clone()
+        else {
+            return Vec::new();
+        };
+
+        match key {
+            Key::Digit(digit) => {
+                if self.buffers.pin.len() < max {
+                    self.buffers.pin.push(digit);
+                }
+                if self.buffers.pin.len() >= max {
+                    let choice = pick_language_fdk(default_mask, active_mask);
+                    return self.finish_pin_language(choice, remote_next, no_pin_next);
+                }
+                Vec::new()
+            }
+            Key::Clear => {
+                self.buffers.pin.clear();
+                Vec::new()
+            }
+            Key::Enter => {
+                if self.buffers.pin.is_empty() {
+                    return self.enter_or_close(no_pin_next);
+                }
+                let choice = pick_language_fdk(default_mask, active_mask);
+                self.finish_pin_language(choice, remote_next, no_pin_next)
+            }
+            Key::Fdk(fdk) => {
+                let Some(bit) = fdk_mask_bit(fdk) else {
+                    return Vec::new();
+                };
+                if active_mask & (1 << bit) == 0 {
+                    return Vec::new();
+                }
+                if self.buffers.pin.is_empty() {
+                    self.buffers_mut().fdk = Some(fdk.as_char());
+                    return self.enter_or_close(no_pin_next);
+                }
+                self.finish_pin_language(Some(fdk), remote_next, no_pin_next)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn finish_pin_language(
+        &mut self,
+        choice: Option<Fdk>,
+        remote_next: Option<StateNumber>,
+        no_pin_next: Option<StateNumber>,
+    ) -> Vec<Action> {
+        let Some(fdk) = choice else {
+            return self.enter_or_close(no_pin_next);
+        };
+        self.buffers_mut().fdk = Some(fdk.as_char());
+        let pin = self.buffers().pin.clone();
+        let pan = self
+            .card()
+            .and_then(|card| card.track2.clone())
+            .unwrap_or_default();
+        match self.build_pin_block(&pin, &pan) {
+            Ok(block) => self.buffers_mut().pin_block = Some(block),
+            Err(err) => {
+                return vec![Action::Log(format!(
+                    "m: PIN block no formado: {err}; se continúa al host"
+                ))]
+                .into_iter()
+                .chain(self.enter_or_close(remote_next))
+                .collect();
+            }
+        }
+        self.enter_or_close(remote_next)
+    }
+
+    fn enter_or_close(&mut self, next: Option<StateNumber>) -> Vec<Action> {
+        match next {
+            Some(next) => crate::state_exec::enter_state(self, next),
+            None => crate::terminal::default_close(self),
+        }
+    }
+
     fn handle_card_inserted(&mut self, card: Card) -> Vec<Action> {
-        if self.pending != Some(Pending::Card) {
+        let t_state = matches!(self.pending, Some(Pending::T { .. }));
+        if self.pending != Some(Pending::Card) && !t_state {
             return vec![Action::Log(
                 "tarjeta insertada fuera de un estado de lectura: ignorada".into(),
             )];
         }
         self.card = Some(card);
-        crate::state_exec::on_card_inserted(self)
+        if t_state {
+            crate::state_exec::on_t_card_inserted(self)
+        } else {
+            crate::state_exec::on_card_inserted(self)
+        }
     }
 
     fn handle_timer(&mut self, timer: u8) -> Vec<Action> {
@@ -641,6 +890,11 @@ impl Terminal {
     /// Código de idioma seleccionado (0-9), si S/V ya lo fijó.
     pub fn language_code(&self) -> Option<u8> {
         self.language_code
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_card_for_test(&mut self, card: Card) {
+        self.card = Some(card);
     }
 
     pub(crate) fn set_language_code(&mut self, code: Option<u8>) {
@@ -1101,6 +1355,49 @@ pub(crate) fn send(message: TerminalMessage) -> Action {
 /// Acciones comunes para responder Ready tras un mensaje del host.
 pub(crate) fn ready_action(terminal: &Terminal, after_reply: bool) -> Action {
     send(terminal.ready(after_reply))
+}
+
+fn fdk_mask_bit(fdk: Fdk) -> Option<u8> {
+    match fdk {
+        Fdk::A => Some(0),
+        Fdk::B => Some(1),
+        Fdk::C => Some(2),
+        Fdk::D => Some(3),
+        Fdk::E => None,
+        Fdk::F => Some(4),
+        Fdk::G => Some(5),
+        Fdk::H => Some(6),
+        Fdk::I => Some(7),
+    }
+}
+
+fn fdk_from_mask_bit(bit: u8) -> Option<Fdk> {
+    match bit {
+        0 => Some(Fdk::A),
+        1 => Some(Fdk::B),
+        2 => Some(Fdk::C),
+        3 => Some(Fdk::D),
+        4 => Some(Fdk::F),
+        5 => Some(Fdk::G),
+        6 => Some(Fdk::H),
+        7 => Some(Fdk::I),
+        _ => None,
+    }
+}
+
+/// Elige la FDK de idioma: primero el default de Enter, si no la primera
+/// activa en la máscara (Tabla 2-49 entrada 9, §2-71).
+fn pick_language_fdk(default_mask: u8, active_mask: u8) -> Option<Fdk> {
+    for mask in [default_mask, active_mask] {
+        for bit in 0..8 {
+            if mask & (1 << bit) != 0 {
+                if let Some(fdk) = fdk_from_mask_bit(bit) {
+                    return Some(fdk);
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

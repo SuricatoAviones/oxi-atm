@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use oxi_core::{
     Fdk, FdkMask, InteractiveTransactionResponse, NoteCounts, PrinterFlag, ScreenSelector,
-    TerminalMessage,
+    StateNumber, TerminalMessage,
 };
 
 /// Un evento que afecta al terminal.
@@ -127,6 +127,48 @@ pub enum Pending {
     Itr {
         /// Mensaje ITR recibido (teclas activas, display y pantalla).
         response: InteractiveTransactionResponse,
+    },
+    /// T - Card Read con PIN temprano (§2-52): teclas aceptadas antes de la
+    /// inserción; `accepted` indica que el cardholder confirmó el PIN.
+    T {
+        /// FDKs activas como Clear (máscara de 8 bits).
+        clear_mask: u8,
+        /// FDKs activas como Accept (máscara de 8 bits).
+        accept_mask: u8,
+        /// El cardholder ya confirmó el PIN antes de insertar la tarjeta.
+        accepted: bool,
+    },
+    /// b - Customer-Selectable PIN (§2-66): primera y segunda entrada.
+    Csp {
+        /// `true` = segunda entrada (confirmación).
+        second: bool,
+        /// Primera entrada guardada.
+        first_pin: String,
+        /// Intentos restantes (`None` = sin límite, entrada 2 = 000).
+        attempts_left: Option<u8>,
+        /// Pantalla de primera entrada.
+        first_screen: Option<ScreenSelector>,
+        /// Pantalla de confirmación.
+        second_screen: Option<ScreenSelector>,
+        /// Pantalla tras un par que no coincide.
+        mismatch_screen: Option<ScreenSelector>,
+        /// Salida buena.
+        good_next: Option<StateNumber>,
+        /// Salida por fallo/agotamiento.
+        fail_next: Option<StateNumber>,
+    },
+    /// m - PIN & Language Select (§2-71): PIN remoto + FDK de idioma.
+    PinLanguage {
+        /// Máximo de dígitos de PIN (PMXPN).
+        max: usize,
+        /// Salida si el cardholder elige idioma sin PIN.
+        no_pin_next: Option<StateNumber>,
+        /// Salida de PIN remoto.
+        remote_next: Option<StateNumber>,
+        /// Máscara de FDKs activas (8 bits).
+        active_mask: u8,
+        /// FDK por defecto para Enter (una sola, 8 bits).
+        default_mask: u8,
     },
     /// Esperando el Transaction Reply del host (estado I).
     TransactionReply,
