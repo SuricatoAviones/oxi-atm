@@ -5,7 +5,10 @@
 
 use std::time::Duration;
 
-use oxi_core::{Fdk, FdkMask, NoteCounts, PrinterFlag, ScreenSelector, TerminalMessage};
+use oxi_core::{
+    Fdk, FdkMask, InteractiveTransactionResponse, NoteCounts, PrinterFlag, ScreenSelector,
+    TerminalMessage,
+};
 
 /// Un evento que afecta al terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +62,9 @@ pub enum Action {
     Send(TerminalMessage),
     /// Mostrar (o limpiar, con `None`) una pantalla.
     Display(Option<ScreenSelector>),
+    /// Mostrar datos de pantalla dinámicos (ITR, §10-79): no vienen del
+    /// Screen/Keyboard Data Load, así que se renderizan directo.
+    DisplayData(Vec<u8>),
     /// Iniciar un timer del manual con su duración (ya resuelta de la config).
     StartTimer {
         /// Número de timer (00-99).
@@ -109,6 +115,12 @@ pub enum Pending {
     Pin {
         /// Máximo de dígitos (PMXPN de la FIT).
         max: usize,
+    },
+    /// Esperando la respuesta del cardholder a una Interactive Transaction
+    /// Response (pantalla dinámica, §10-79).
+    Itr {
+        /// Mensaje ITR recibido (teclas activas, display y pantalla).
+        response: InteractiveTransactionResponse,
     },
     /// Esperando el Transaction Reply del host (estado I).
     TransactionReply,

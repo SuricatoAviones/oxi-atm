@@ -219,6 +219,10 @@ async fn dispatch(
                     .unwrap_or_default();
                 let _ = updates.send(UiUpdate::Screen { id, text }).await;
             }
+            Action::DisplayData(data) => {
+                let text = render_screen(&data);
+                let _ = updates.send(UiUpdate::Screen { id: None, text }).await;
+            }
             Action::StartTimer { timer, after } => {
                 if let Some(previous) = timers.remove(&timer) {
                     previous.abort();

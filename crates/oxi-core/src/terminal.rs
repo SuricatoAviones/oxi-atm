@@ -297,6 +297,44 @@ mod tests {
         assert_eq!(parsed.fields().len(), 12);
     }
 
+    /// Respuesta ITR (Tabla 9-2): TRQ abreviado con sólo buffer B; el resto
+    /// de los campos de la Tabla 9-1 viaja vacío y se re-parsea igual.
+    #[test]
+    fn itr_response_should_serialize_only_buffer_b() {
+        let request = TransactionRequest {
+            luno: luno(),
+            tvn: None,
+            top_of_receipt: '1',
+            mcn: Mcn::new('\u{31}', false).expect("primer MCN del rango"),
+            track2: None,
+            track3: None,
+            op_code: None,
+            amount: None,
+            buffer_a: None,
+            buffer_b: Some("012".into()),
+            buffer_c: None,
+            track1: None,
+            status_data: None,
+        };
+        let bytes = request.to_bytes().expect("TRQ de ITR válido");
+        let raw = RawFields::parse(&bytes);
+        assert_eq!(raw.fields().len(), 12);
+        assert_eq!(raw.fields()[10], b"012".to_vec());
+        assert!(raw.fields()[5].is_empty(), "pista 2 vacía");
+        assert!(raw.fields()[8].is_empty(), "importe vacío");
+        assert!(raw.fields()[9].is_empty(), "buffer A vacío");
+
+        match crate::parse_terminal(&raw).expect("re-parse del TRQ abreviado") {
+            TerminalMessage::TransactionRequest(parsed) => {
+                assert_eq!(parsed.buffer_b.as_deref(), Some("012"));
+                assert!(parsed.buffer_a.is_none());
+                assert!(parsed.amount.is_none());
+                assert!(parsed.track2.is_none());
+            }
+            other => panic!("se esperaba Transaction Request: {other:?}"),
+        }
+    }
+
     /// Con pista 1 y estado anterior: identificadores '1'/'2' presentes
     /// (Tabla 9-1 o/p y q/r).
     #[test]
