@@ -207,15 +207,15 @@ descarga se hace por State Tables Load (§10-9); el primer char de los datos es 
 | N | Cámara (**no soportado**) | §2-43 |
 | R | Entrada de importe multilingüe; buffer y overlay desde extensión Z; overlay/pantalla language-dependent no compuestos (Q17) | §2-48 |
 | S | Selección de idioma por código de tarjeta; PLNDX/PINDX track 2 forward; extension para códigos 6–9; sin código → no-language exit (Q17) | §2-50 |
-| T | Lectura de tarjeta + habilitación temprana de teclado (DASH/EMV) | §2-52 |
+| T | Lectura de tarjeta + PIN temprano; PIN capturado antes de insertar, se procesa B si fue aceptado/completo; pantalla de PIN temprano no compuesta (Q18) | §2-52 |
 | V | Selección de grupo de pantallas por código de tarjeta | §2-57 |
 | W | Switch por keycode guardado en FDK buffer | §2-58 |
 | X | FDK information entry (valor por FDK a buffer B/C/amount) | §2-59 |
 | Y | Selección de 8 FDK (A–I) | §2-62 |
-| b | PIN elegible por el cliente (CSP) | §2-66 |
+| b | PIN elegible por el cliente (CSP): primera y segunda entrada, reintentos; verificación local/U/V no modelados (Q18) | §2-66 |
 | d…g | Exit states (programables; fuera de alcance v1) | §2-69 |
 | k | Smart FIT check (match con datos de chip) | §2-70 |
-| m | PIN + selección de idioma por FDK | §2-71 |
+| m | PIN + selección de idioma por FDK; PIN remoto y FDK de idioma; verificación local/op-codes/multi-language no modelados (Q19) | §2-71 |
 | `>` | Cash Accept (BNA) | §2-77 |
 | w | Cheque Accept (CPM) | §2-82 |
 | — | Time-Out State (fijo, pantalla C00) | §2-89 |
@@ -385,6 +385,8 @@ de menú estándar; **[PEND: Q7]** qué menús necesita el dueño.
 | Q15 | Override Reserved Screens: el manual limita `D0000`–`D0010` y el valor `000`–`999`, pero no publica el mapping `D`→pantalla reservada. El simulador aplica el override cuando una pantalla referencia `D0000`–`D0010`; validar con una traza real. | Pantallas reservadas (fase 8) |
 | Q16 | G condición 000: el manual dice que la entrada 6 (decimales) se ignora con condición 000, pero también evalúa “a la derecha del punto decimal”. El simulador usa la entrada 6 como posición decimal; validar con una traza real. | Amount check (fase 8) |
 | Q17 | R/S: el overlay y el ajuste de pantalla por language group no están compuestos por el render; S sólo localiza el código con PINDX track 2 start-sentinel forward (otras combinaciones pendientes). Validar con una traza multilingüe real. | Idiomas (fase 8) |
+| Q18 | T/b: T captura el PIN temprano y lo procesa al leer la tarjeta si fue aceptado/completo; la pantalla de PIN temprano/overlay no se compone y el caso incompleto vuelve a la pantalla de B. b compara el par y maneja reintentos, pero la verificación local y los buffers U/V no están modelados. | PIN temprano/CSP (fase 8) |
+| Q19 | m: PIN remoto + FDK de idioma y máscaras; la verificación local, operation codes, buffer positions y multi-language screen bases no están modelados. | PIN+idioma (fase 8) |
 
 ---
 

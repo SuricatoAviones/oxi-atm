@@ -9,7 +9,7 @@
 
 use oxi_core::{Fdk, FdkMask, ScreenId, ScreenSelector, StateNumber, StateTableDef};
 
-use crate::event::{Action, BufferId, Pending};
+use crate::event::{Action, BufferId, Event, Key, Pending};
 use crate::terminal::{default_close, Terminal};
 
 /// Entrada `index` (numeración del manual: 1 = tipo, 2 = primera entrada de
@@ -62,6 +62,9 @@ pub(crate) fn enter_state(terminal: &mut Terminal, number: StateNumber) -> Vec<A
         'K' => state_fit_switch(terminal, &table),
         'R' => state_enhanced_amount_entry(terminal, &table),
         'S' => state_language_switch(terminal, &table),
+        'T' => state_card_read_pin_init(terminal, &table),
+        'b' => state_csp(terminal, &table),
+        'm' => state_pin_language(terminal, &table),
         'X' => state_fdk_info(terminal, &table),
         'Y' => state_eight_fdk(terminal, &table),
         'W' => state_fdk_switch(terminal, &table),
@@ -144,6 +147,97 @@ pub(crate) fn on_card_inserted(terminal: &mut Terminal) -> Vec<Action> {
         actions.extend(enter_state(terminal, next));
     } else {
         actions.extend(default_close(terminal));
+    }
+    actions
+}
+
+/// Hook: tarjeta insertada en T; conserva el PIN temprano (§2-52).
+pub(crate) fn on_t_card_inserted(terminal: &mut Terminal) -> Vec<Action> {
+    let Some(current) = terminal.current_state() else {
+        return vec![Action::Log("T: tarjeta sin estado de lectura".into())];
+    };
+    let Some(table) = terminal.states().get(&current).cloned() else {
+        return default_close(terminal);
+    };
+    if table.state_type != 'T' {
+        return vec![Action::Log("T: el estado actual no es T".into())];
+    }
+    let entries = &table.entries;
+    let card = terminal.card().cloned().unwrap_or_default();
+    let accepted = terminal
+        .pending()
+        .is_some_and(|pending| matches!(pending, Pending::T { accepted: true, .. }));
+    let extension = entry_state(entries, 9)
+        .and_then(|number| terminal.states().get(&number).cloned())
+        .filter(|state| state.state_type == 'Z');
+
+    if terminal.hardware().reader.jammed || terminal.hardware().reader.read_error {
+        let mut actions = vec![Action::Log(
+            "T: lector con falla; la tarjeta no se pudo leer".into(),
+        )];
+        if let Some(error_screen) = entry_screen(entries, 4) {
+            actions.extend(terminal.set_screen(Some(error_screen)));
+        }
+        if !terminal.hardware().reader.jammed {
+            actions.push(Action::EjectCard);
+            terminal.take_card();
+        }
+        return actions;
+    }
+
+    for condition_entry in [5usize, 6, 7] {
+        let Some(raw) = entry_mask(entries, condition_entry) else {
+            continue;
+        };
+        if raw == 255 {
+            continue;
+        }
+        let wants_track3 = raw & 0b0001 != 0;
+        let wants_track2 = raw & 0b0010 != 0;
+        let wants_track1 = raw & 0b0100 != 0;
+        let satisfied = (!wants_track3 || card.track3.is_some())
+            && (!wants_track2 || card.track2.is_some())
+            && (!wants_track1 || card.track1.is_some());
+        if !satisfied {
+            continue;
+        }
+
+        // Good read: entry 3 si hay FIT match o no hay FITs; si no, la salida
+        // "No FIT Match" de la extensión (entry 3).
+        let next = if terminal.fits().is_empty() || fit_match(terminal).is_some() {
+            entry_state(entries, 3)
+        } else {
+            extension
+                .as_ref()
+                .and_then(|state| entry_state(&state.entries, 3))
+        };
+        let mut actions = match next {
+            Some(next) => enter_state(terminal, next),
+            None => default_close(terminal),
+        };
+
+        // Si el siguiente estado es B y el PIN temprano ya está completo o
+        // fue aceptado, se procesa sin exigir otra pulsación (Q18 para el
+        // caso incompleto: B vuelve a habilitar el teclado).
+        if let Some(Pending::Pin { max }) = terminal.pending().cloned() {
+            let ready = terminal.buffers().pin.len() >= 4
+                && (accepted || terminal.buffers().pin.len() >= max);
+            if ready {
+                actions.extend(terminal.handle(Event::KeyPressed(Key::Enter)));
+            }
+        }
+        return actions;
+    }
+
+    let mut actions = vec![Action::Log(
+        "T: las condiciones de lectura no se cumplen".into(),
+    )];
+    if let Some(error_screen) = entry_screen(entries, 4) {
+        actions.extend(terminal.set_screen(Some(error_screen)));
+    }
+    if !terminal.hardware().reader.jammed {
+        actions.push(Action::EjectCard);
+        terminal.take_card();
     }
     actions
 }
@@ -256,12 +350,133 @@ fn state_fit_switch(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Actio
     }
 }
 
-/// B - PIN Entry (§2-8) con verificación remota (FIT PCKLN=0 del driver).
-fn state_pin_entry(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
-    let max_pin = fit_match(terminal)
+/// PMXPN de la FIT que matchea (Tabla 8-1), acotado a 4–16.
+fn fit_max_pin(terminal: &Terminal) -> usize {
+    fit_match(terminal)
         .and_then(|fit| fit.entries.get(8).copied())
         .map_or(16, usize::from)
-        .clamp(4, 16);
+        .clamp(4, 16)
+}
+
+/// T - Card Read - PIN Entry Initiation (§2-52, Tabla 2-36 + extensión 2-37).
+fn state_card_read_pin_init(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
+    let extension = entry_state(&table.entries, 9)
+        .and_then(|number| terminal.states().get(&number).cloned())
+        .filter(|state| state.state_type == 'Z');
+    let clear_mask = extension
+        .as_ref()
+        .and_then(|state| entry_mask(&state.entries, 4))
+        .unwrap_or(0);
+    let accept_mask = extension
+        .as_ref()
+        .and_then(|state| entry_mask(&state.entries, 5))
+        .unwrap_or(0);
+
+    terminal.set_pending(Some(Pending::T {
+        clear_mask,
+        accept_mask,
+        accepted: false,
+    }));
+    let mut actions = Vec::new();
+    if let Some(screen) = entry_screen(&table.entries, 2) {
+        actions.extend(terminal.set_screen(Some(screen)));
+    }
+    if extension.is_none() {
+        actions.push(Action::Log(
+            "T: sin extensión Z; PIN temprano sin máscaras".into(),
+        ));
+    } else if let Some(pin_screen) = extension
+        .as_ref()
+        .and_then(|state| entry_screen(&state.entries, 2))
+    {
+        actions.push(Action::Log(format!(
+            "T: pantalla de PIN temprano {pin_screen:?} no compuesta (Q18)"
+        )));
+    }
+    actions
+}
+
+/// b - Customer-Selectable PIN (§2-66, Tabla 2-45 + extensión 2-46).
+fn state_csp(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
+    let Some(extension_number) = entry_state(&table.entries, 9) else {
+        return default_close(terminal);
+    };
+    let Some(extension) = terminal.states().get(&extension_number).cloned() else {
+        return default_close(terminal);
+    };
+    if extension.state_type != 'Z' {
+        return default_close(terminal);
+    }
+    let attempts = entry(&extension.entries, 2)
+        .and_then(|text| text.parse::<u8>().ok())
+        .filter(|value| *value <= 10)
+        .unwrap_or(0);
+    let verify_local = entry_mask(&extension.entries, 3).unwrap_or(0);
+
+    terminal.set_pending(Some(Pending::Csp {
+        second: false,
+        first_pin: String::new(),
+        attempts_left: (attempts > 0).then_some(attempts),
+        first_screen: entry_screen(&table.entries, 2),
+        second_screen: entry_screen(&table.entries, 7),
+        mismatch_screen: entry_screen(&table.entries, 8),
+        good_next: entry_state(&table.entries, 5),
+        fail_next: entry_state(&table.entries, 6),
+    }));
+    terminal.set_timeout_next(entry_state(&table.entries, 3));
+    terminal.set_cancel_next(entry_state(&table.entries, 4));
+
+    let mut actions = Vec::new();
+    if let Some(screen) = entry_screen(&table.entries, 2) {
+        actions.extend(terminal.set_screen(Some(screen)));
+    }
+    if verify_local == 0 {
+        actions.push(Action::Log(
+            "b: verificación local 000; los buffers U/V no están modelados (Q18)".into(),
+        ));
+    }
+    actions.push(start_timer(terminal, 0));
+    actions
+}
+
+/// m - PIN & Language Select (§2-71, Tabla 2-48 + extensiones 2-49).
+fn state_pin_language(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
+    let Some(extension_number) = entry_state(&table.entries, 5) else {
+        return default_close(terminal);
+    };
+    let Some(extension) = terminal.states().get(&extension_number).cloned() else {
+        return default_close(terminal);
+    };
+    if extension.state_type != 'Z' {
+        return default_close(terminal);
+    }
+    let default_mask = entry_mask(&extension.entries, 9).unwrap_or(0);
+    let active_mask = entry_mask(&table.entries, 8).unwrap_or(0);
+
+    terminal.set_pending(Some(Pending::PinLanguage {
+        max: fit_max_pin(terminal),
+        no_pin_next: entry_state(&extension.entries, 2),
+        remote_next: entry_state(&extension.entries, 6),
+        active_mask,
+        default_mask,
+    }));
+    terminal.set_timeout_next(entry_state(&table.entries, 3));
+    terminal.set_cancel_next(entry_state(&table.entries, 4));
+
+    let mut actions = Vec::new();
+    if let Some(screen) = entry_screen(&table.entries, 2) {
+        actions.extend(terminal.set_screen(Some(screen)));
+    }
+    actions.push(Action::Log(
+        "m: PIN + language; verification local/op-codes/multi-language no modelados (Q19)".into(),
+    ));
+    actions.push(start_timer(terminal, 0));
+    actions
+}
+
+/// B - PIN Entry (§2-8) con verificación remota (FIT PCKLN=0 del driver).
+fn state_pin_entry(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
+    let max_pin = fit_max_pin(terminal);
     terminal.set_pending(Some(Pending::Pin { max: max_pin }));
     // Enter = FDK A → remote pin check next state (entrada 8).
     terminal.set_fdk_next(Fdk::A, entry_state(&table.entries, 8));
@@ -1370,6 +1585,153 @@ mod interpreter_tests {
             displays_screen(&actions, 53),
             "language code 3 → estado 201"
         );
+    }
+
+    /// T: PIN temprano aceptado antes de insertar la tarjeta; al leer la
+    /// tarjeta se procesa B sin pedir otra confirmación (§2-52).
+    #[test]
+    fn state_t_should_carry_early_pin_into_b() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'T', "015001016002002002000002"),
+            table(1, 'B', "028200201010213032200003"),
+            table(2, 'Z', "017200000001000000000000"),
+            table(200, 'J', "052255052052052052052000"),
+        ]);
+        enter(&mut terminal, 0);
+        for digit in ['1', '2', '3', '4'] {
+            terminal.handle(Event::KeyPressed(Key::Digit(digit)));
+        }
+        let _ = terminal.handle(Event::KeyPressed(Key::Fdk(Fdk::A)));
+        let actions = terminal.handle(Event::CardInserted(crate::event::Card {
+            track2: Some(";9999990000000000=2512?".into()),
+            ..crate::event::Card::default()
+        }));
+        assert!(terminal.buffers().pin_block.is_some());
+        assert!(displays_screen(&actions, 52), "T → B → 200");
+    }
+
+    /// b: par de PINs iguales → good exit y PIN block formado (§2-66).
+    #[test]
+    fn state_csp_should_accept_matching_pair() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'b', "030200201202203031032001"),
+            table(1, 'Z', "003000000000000000000000"),
+            table(202, 'J', "052255052052052052052000"),
+        ]);
+        terminal.set_card_for_test(crate::event::Card {
+            track2: Some(";9999990000000000=2512?".into()),
+            ..crate::event::Card::default()
+        });
+        enter(&mut terminal, 0);
+        for digit in ['1', '2', '3', '4'] {
+            terminal.handle(Event::KeyPressed(Key::Digit(digit)));
+        }
+        let actions = terminal.handle(Event::KeyPressed(Key::Enter));
+        assert!(displays_screen(&actions, 31), "segunda entrada");
+        for digit in ['1', '2', '3', '4'] {
+            terminal.handle(Event::KeyPressed(Key::Digit(digit)));
+        }
+        let actions = terminal.handle(Event::KeyPressed(Key::Enter));
+        assert!(terminal.buffers().pin_block.is_some());
+        assert!(displays_screen(&actions, 52));
+    }
+
+    /// b: par distinto vuelve a la pantalla de mismatch y luego permite
+    /// reintentar; con 1 intento agotado va al fail exit.
+    #[test]
+    fn state_csp_should_retry_mismatch_and_fail_when_exhausted() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'b', "030200201202203031032001"),
+            table(1, 'Z', "001000000000000000000000"),
+            table(202, 'J', "052255052052052052052000"),
+            table(203, 'J', "053255053053053053053000"),
+        ]);
+        terminal.set_card_for_test(crate::event::Card {
+            track2: Some(";9999990000000000=2512?".into()),
+            ..crate::event::Card::default()
+        });
+        enter(&mut terminal, 0);
+        for digit in ['1', '2', '3', '4'] {
+            terminal.handle(Event::KeyPressed(Key::Digit(digit)));
+        }
+        let _ = terminal.handle(Event::KeyPressed(Key::Enter));
+        for digit in ['9', '9', '9', '9'] {
+            terminal.handle(Event::KeyPressed(Key::Digit(digit)));
+        }
+        let actions = terminal.handle(Event::KeyPressed(Key::Enter));
+        // Intento agotado: fail exit directo (J 203 muestra 053).
+        assert!(displays_screen(&actions, 53));
+    }
+
+    /// b: con 2 intentos, el mismatch vuelve a la pantalla y permite el
+    /// segundo par correcto.
+    #[test]
+    fn state_csp_mismatch_should_retry_when_attempts_remain() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'b', "030200201202203031032001"),
+            table(1, 'Z', "002000000000000000000000"),
+            table(202, 'J', "052255052052052052052000"),
+        ]);
+        terminal.set_card_for_test(crate::event::Card {
+            track2: Some(";9999990000000000=2512?".into()),
+            ..crate::event::Card::default()
+        });
+        enter(&mut terminal, 0);
+        for digit in ['1', '2', '3', '4'] {
+            terminal.handle(Event::KeyPressed(Key::Digit(digit)));
+        }
+        let _ = terminal.handle(Event::KeyPressed(Key::Enter));
+        for digit in ['9', '9', '9', '9'] {
+            terminal.handle(Event::KeyPressed(Key::Digit(digit)));
+        }
+        let actions = terminal.handle(Event::KeyPressed(Key::Enter));
+        assert!(displays_screen(&actions, 32), "pantalla de mismatch");
+        for digit in ['1', '2', '3', '4'] {
+            terminal.handle(Event::KeyPressed(Key::Digit(digit)));
+        }
+        let _ = terminal.handle(Event::KeyPressed(Key::Enter));
+        for digit in ['1', '2', '3', '4'] {
+            terminal.handle(Event::KeyPressed(Key::Digit(digit)));
+        }
+        let actions = terminal.handle(Event::KeyPressed(Key::Enter));
+        assert!(displays_screen(&actions, 52));
+    }
+
+    /// m: PIN remoto + Enter usa la FDK default de idioma (§2-71).
+    #[test]
+    fn state_m_should_form_pin_and_use_default_language_fdk() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'm', "040200201001255000003255"),
+            table(1, 'Z', "202203204205206003000001"),
+            table(202, 'J', "052255052052052052052000"),
+            table(206, 'J', "053255053053053053053000"),
+        ]);
+        terminal.set_card_for_test(crate::event::Card {
+            track2: Some(";9999990000000000=2512?".into()),
+            ..crate::event::Card::default()
+        });
+        enter(&mut terminal, 0);
+        for digit in ['1', '2', '3', '4'] {
+            terminal.handle(Event::KeyPressed(Key::Digit(digit)));
+        }
+        let actions = terminal.handle(Event::KeyPressed(Key::Enter));
+        assert_eq!(terminal.buffers().fdk, Some('A'));
+        assert!(terminal.buffers().pin_block.is_some());
+        assert!(displays_screen(&actions, 53));
+    }
+
+    /// m: FDK activa sin PIN va al no-PIN exit y guarda el idioma.
+    #[test]
+    fn state_m_fdk_without_pin_should_take_no_pin_exit() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'm', "040200201001255000003255"),
+            table(1, 'Z', "202203204205206003000001"),
+            table(202, 'J', "052255052052052052052000"),
+        ]);
+        enter(&mut terminal, 0);
+        let actions = terminal.handle(Event::KeyPressed(Key::Fdk(Fdk::B)));
+        assert_eq!(terminal.buffers().fdk, Some('B'));
+        assert!(displays_screen(&actions, 52));
     }
 
     /// Cancel usa el cancel next state del estado corriente.
