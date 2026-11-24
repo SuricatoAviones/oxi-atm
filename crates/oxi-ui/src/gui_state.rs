@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 
 use oxi_core::{OperationalMode, ScreenSelector};
+use oxi_engine::InputEcho;
 use oxi_net::ConnectionState;
 
 use crate::runtime::UiUpdate;
@@ -27,6 +28,8 @@ pub struct GuiState {
     pub connection: Option<ConnectionState>,
     /// Líneas de log (las más viejas se descartan).
     pub logs: VecDeque<String>,
+    /// Eco local del campo de entrada (PIN/importe), si hay captura.
+    pub input_echo: Option<InputEcho>,
     /// Efectivo dispensado pendiente de retiro (botón de la GUI).
     pub cash_ready: Option<[u16; 4]>,
     /// El runtime cerró (red o motor terminaron).
@@ -44,6 +47,7 @@ impl GuiState {
             }
             UiUpdate::Mode(mode) => self.mode = Some(mode),
             UiUpdate::Connection(state) => self.connection = Some(state),
+            UiUpdate::InputEcho(echo) => self.input_echo = echo,
             UiUpdate::CashReady { counts } => self.cash_ready = Some(counts),
             UiUpdate::SessionEnded => self.mark_closed(),
         }
@@ -128,6 +132,24 @@ mod tests {
         assert_eq!(state.cash_ready, Some([1, 0, 0, 0]));
         state.cash_taken();
         assert_eq!(state.cash_ready, None);
+    }
+
+    #[test]
+    fn input_echo_should_track_masked_and_clear() {
+        let mut state = GuiState::default();
+        state.apply(UiUpdate::InputEcho(Some(InputEcho {
+            text: "XXXX".into(),
+            masked: true,
+        })));
+        assert_eq!(
+            state.input_echo,
+            Some(InputEcho {
+                text: "XXXX".into(),
+                masked: true,
+            })
+        );
+        state.apply(UiUpdate::InputEcho(None));
+        assert_eq!(state.input_echo, None);
     }
 
     #[test]

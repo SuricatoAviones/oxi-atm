@@ -74,6 +74,20 @@ impl Buffers {
     }
 }
 
+/// Eco local del campo de entrada en la pantalla.
+///
+/// Lo consume el runtime para reflejar las teclas sin exponer el PIN en claro:
+/// el estado B muestra una 'X' por tecla (manual §2-8), el importe se muestra
+/// tal como se digita (§2-17) y el estado H respeta su parámetro de display
+/// (§2-23, Tabla 2-14).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputEcho {
+    /// Texto a mostrar en el campo de eco (vacío = campo activo sin dígitos).
+    pub text: String,
+    /// `true` = PIN o datos ocultos ('X' por tecla); `false` = datos visibles.
+    pub masked: bool,
+}
+
 /// Configuración del terminal que llega del host (CPL/ECPL, SPEC §11).
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
@@ -236,6 +250,35 @@ impl Terminal {
         &self.buffers
     }
 
+    /// Eco local del campo de entrada en curso (ver [`InputEcho`]).
+    pub fn input_echo(&self) -> Option<InputEcho> {
+        match &self.pending {
+            Some(Pending::Pin { .. }) => Some(InputEcho {
+                text: "X".repeat(self.buffers.pin.chars().count().min(30)),
+                masked: true,
+            }),
+            Some(Pending::Digits { target, masked, .. }) => {
+                let raw = match target {
+                    BufferId::Amount => self.buffers.amount.trim_start_matches('0').to_owned(),
+                    BufferId::B => self.buffers.b.clone(),
+                    BufferId::C => self.buffers.c.clone(),
+                };
+                if *masked {
+                    Some(InputEcho {
+                        text: "X".repeat(raw.chars().count().min(30)),
+                        masked: true,
+                    })
+                } else {
+                    Some(InputEcho {
+                        text: raw,
+                        masked: false,
+                    })
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Config ID reportado por el host (None = 0000 de instalación).
     pub fn config_id(&self) -> Option<u16> {
         self.config_id
@@ -309,7 +352,7 @@ impl Terminal {
             };
         }
         match &self.pending {
-            Some(Pending::Digits { target, max }) => {
+            Some(Pending::Digits { target, max, .. }) => {
                 let (max, target) = (*max, *target);
                 match target {
                     BufferId::Amount => {

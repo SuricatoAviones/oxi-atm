@@ -20,7 +20,7 @@ pub use hardware::{
     Cassette, DeviceCondition, DispenseOutcome, Dispenser, Fault, Hardware, PaperState, Printer,
     Reader, ReaderState, Sensors, CASSETTE_COUNT,
 };
-pub use terminal::{Buffers, Terminal};
+pub use terminal::{Buffers, InputEcho, Terminal};
 
 /// Nombre del crate, para verificación de armado del workspace.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");

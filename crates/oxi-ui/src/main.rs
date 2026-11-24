@@ -90,6 +90,15 @@ fn print_update(update: UiUpdate) {
         UiUpdate::Log(line) => println!("[log] {line}"),
         UiUpdate::Mode(mode) => println!("[modo] {mode:?}"),
         UiUpdate::Connection(state) => println!("[conexión] {state:?}"),
+        UiUpdate::InputEcho(Some(echo)) => {
+            let text = if echo.text.is_empty() {
+                "_"
+            } else {
+                echo.text.as_str()
+            };
+            println!("[entrada] {text}");
+        }
+        UiUpdate::InputEcho(None) => {}
         // La CLI ya imprime el log de dispensado; el evento tipado es para la GUI.
         UiUpdate::CashReady { .. } => {}
         UiUpdate::SessionEnded => println!("[conexión] sesión terminada"),

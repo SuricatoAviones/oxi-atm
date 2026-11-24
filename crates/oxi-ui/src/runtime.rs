@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use oxi_core::{parse_host, HostMessage, OperationalMode, ParseOptions, ScreenSelector};
-use oxi_engine::{Action, Event, Terminal};
+use oxi_engine::{Action, Event, InputEcho, Terminal};
 use oxi_net::{connect_with_backoff, pump, ConnectionState, ReconnectConfig};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -30,6 +30,8 @@ pub enum UiUpdate {
     Mode(OperationalMode),
     /// Cambio de estado de la conexión.
     Connection(ConnectionState),
+    /// Eco local del campo de entrada (`None` = sin captura con eco).
+    InputEcho(Option<InputEcho>),
     /// Efectivo dispensado pendiente de retiro (para el botón de la GUI).
     CashReady {
         /// Billetes por casete.
@@ -132,6 +134,7 @@ pub fn spawn(config: &SimConfig) -> RuntimeHandle {
         terminal.configure_security(security);
         let mut timers: HashMap<u8, JoinHandle<()>> = HashMap::new();
         let options = ParseOptions::default();
+        let mut last_echo: Option<InputEcho> = None;
         let initial = terminal.handle(Event::PoweredOn);
         dispatch(
             &mut terminal,
@@ -140,6 +143,7 @@ pub fn spawn(config: &SimConfig) -> RuntimeHandle {
             &frame_out_tx,
             &engine_events,
             &mut timers,
+            &mut last_echo,
         )
         .await;
 
@@ -172,6 +176,7 @@ pub fn spawn(config: &SimConfig) -> RuntimeHandle {
                 &frame_out_tx,
                 &engine_events,
                 &mut timers,
+                &mut last_echo,
             )
             .await;
         }
@@ -192,6 +197,7 @@ async fn dispatch(
     frames_out: &mpsc::Sender<Vec<u8>>,
     events: &mpsc::Sender<Event>,
     timers: &mut HashMap<u8, JoinHandle<()>>,
+    last_echo: &mut Option<InputEcho>,
 ) {
     for action in actions {
         match action {
@@ -258,6 +264,14 @@ async fn dispatch(
                 let _ = updates.send(UiUpdate::CashReady { counts }).await;
             }
         }
+    }
+
+    // Eco local de la captura en curso (PIN/importe/info). Se manda solo al
+    // cambiar; el motor decide qué mostrar (manual §2-8, §2-17, §2-23).
+    let echo = terminal.input_echo();
+    if echo != *last_echo {
+        let _ = updates.send(UiUpdate::InputEcho(echo.clone())).await;
+        *last_echo = echo;
     }
 }
 

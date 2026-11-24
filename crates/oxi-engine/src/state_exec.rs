@@ -444,6 +444,7 @@ fn state_amount_entry(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Act
     terminal.set_pending(Some(Pending::Digits {
         target: BufferId::Amount,
         max: amount_width(terminal),
+        masked: false,
     }));
     terminal.set_fdk_next_from_entries(&table.entries, 5);
     terminal.set_timeout_next(entry_state(&table.entries, 3));
@@ -461,8 +462,15 @@ fn state_info_entry(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Actio
     let params = entry(&table.entries, 9).unwrap_or("000");
     // Tabla 2-14: 000/001 → buffer C; 002/003 → buffer B.
     let value: u8 = params.parse().unwrap_or(0);
+    // Tabla 2-14 entrada 9: 000/001 → buffer C; 002/003 → buffer B.
+    // El dígito de las unidades elige B/C y el bit 0 si el eco es 'X' o datos.
     let target = if value <= 1 { BufferId::C } else { BufferId::B };
-    terminal.set_pending(Some(Pending::Digits { target, max: 32 }));
+    let masked = matches!(value, 0 | 2);
+    terminal.set_pending(Some(Pending::Digits {
+        target,
+        max: 32,
+        masked,
+    }));
     terminal.set_fdk_next_from_entries(&table.entries, 5);
     terminal.set_timeout_next(entry_state(&table.entries, 3));
     terminal.set_cancel_next(entry_state(&table.entries, 4));
@@ -884,8 +892,29 @@ mod interpreter_tests {
         let mut terminal = terminal_with(vec![table(0, 'F', "020200200001255255255020")]);
         enter(&mut terminal, 0);
         terminal.handle(Event::KeyPressed(Key::Digit('5')));
+        let echo = terminal.input_echo().expect("eco del importe");
+        assert_eq!(echo.text, "5");
+        assert!(!echo.masked);
         terminal.handle(Event::KeyPressed(Key::Clear));
         assert_eq!(terminal.buffers().amount, "00000000");
+        let echo = terminal.input_echo().expect("eco tras Clear");
+        assert!(echo.text.is_empty());
+    }
+
+    /// B: el PIN se refleja como una 'X' por tecla (§2-8).
+    #[test]
+    fn state_b_should_echo_x_per_pin_key() {
+        let mut terminal = terminal_with(vec![table(0, 'B', "028200201010213032003003")]);
+        enter(&mut terminal, 0);
+        for digit in ['1', '2', '3', '4'] {
+            terminal.handle(Event::KeyPressed(Key::Digit(digit)));
+        }
+        let echo = terminal.input_echo().expect("eco del PIN");
+        assert_eq!(echo.text, "XXXX");
+        assert!(echo.masked);
+        terminal.handle(Event::KeyPressed(Key::Clear));
+        let echo = terminal.input_echo().expect("eco tras Clear");
+        assert!(echo.text.is_empty());
     }
 
     /// H: parámetro 002 → buffer B con eco 'X' (§2-23, Tabla 2-14).
@@ -900,6 +929,9 @@ mod interpreter_tests {
             terminal.handle(Event::KeyPressed(Key::Digit(digit)));
         }
         assert_eq!(terminal.buffers().b, "777");
+        let echo = terminal.input_echo().expect("eco de H");
+        assert_eq!(echo.text, "XXX");
+        assert!(echo.masked);
         let actions = terminal.handle(Event::KeyPressed(Key::Enter));
         assert!(displays_screen(&actions, 52));
     }
@@ -912,6 +944,9 @@ mod interpreter_tests {
         terminal.handle(Event::KeyPressed(Key::Digit('4')));
         assert_eq!(terminal.buffers().c, "4");
         assert!(terminal.buffers().b.is_empty());
+        let echo = terminal.input_echo().expect("eco de H");
+        assert_eq!(echo.text, "4");
+        assert!(!echo.masked);
     }
 
     /// Y: la FDK guarda keycode y escribe el op-code en las posiciones de la

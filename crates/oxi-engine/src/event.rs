@@ -101,6 +101,9 @@ pub enum Pending {
         target: BufferId,
         /// Cantidad máxima de dígitos.
         max: usize,
+        /// Eco local: `true` = una 'X' por tecla (H 000/002, §2-23);
+        /// `false` = mostrar los datos (importe, H 001/003).
+        masked: bool,
     },
     /// Capturando PIN (estado B).
     Pin {
