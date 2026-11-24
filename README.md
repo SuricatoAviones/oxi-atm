@@ -239,6 +239,10 @@ tampoco alcanza: SAC exige una CA del *Microsoft Trusted Root Program* (o una
 predicción favorable de su nube). Para desarrollo nativo, la vía práctica es
 desactivar SAC (decisión tuya) o usar una máquina/VM sin SAC.
 
+> Verificado en Windows 11 25H2 con SAC desactivado: `cargo build`, `cargo
+> fmt --check`, `cargo test --workspace` y la GUI nativa contra el mock nativo
+> funcionan.
+
 ---
 
 ## Comandos de la CLI

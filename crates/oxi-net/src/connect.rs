@@ -184,31 +184,59 @@ mod tests {
         let addr = listener.local_addr().expect("addr");
         drop(listener);
 
-        let (state_tx, state_rx) = mpsc::channel(16);
+        let (state_tx, mut state_rx) = mpsc::channel(16);
         let config = ReconnectConfig {
             max_attempts: 10,
             initial_backoff: Duration::from_millis(20),
             max_backoff: Duration::from_millis(50),
         };
 
-        // El host "levanta" mientras el primer intento duerme su backoff.
-        let relay = addr;
+        // El host "levanta" recién cuando se observa el segundo intento: así
+        // el primer connect falla sí o sí y el test no depende del scheduler
+        // (en Windows el listener llegaba a bindear antes del primer intento).
+        let host_ready = std::sync::Arc::new(tokio::sync::Notify::new());
+        let host_signal = host_ready.clone();
         let host_up = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            tokio::net::TcpListener::bind(relay)
+            host_signal.notified().await;
+            tokio::net::TcpListener::bind(addr)
                 .await
                 .expect("el host levanta")
         });
+        let collector = tokio::spawn(async move {
+            let mut states = Vec::new();
+            while let Some(state) = state_rx.recv().await {
+                let second_attempt =
+                    matches!(state, ConnectionState::Connecting { attempt } if attempt >= 2);
+                states.push(state);
+                if second_attempt {
+                    host_ready.notify_one();
+                }
+                if states.last() == Some(&ConnectionState::Connected) {
+                    break;
+                }
+            }
+            states
+        });
 
-        let stream = connect_with_backoff(addr, &config, &state_tx)
-            .await
-            .expect("conecta al segundo intento");
+        let stream = tokio::time::timeout(
+            StdDuration::from_secs(5),
+            connect_with_backoff(addr, &config, &state_tx),
+        )
+        .await
+        .expect("la reconexión no debe colgarse")
+        .expect("conecta al segundo intento");
         drop(stream);
-        let listener = host_up.await.expect("task del host");
+        let listener = tokio::time::timeout(StdDuration::from_secs(5), host_up)
+            .await
+            .expect("el host debe levantar")
+            .expect("task del host");
         drop(listener);
 
         // Estados: Connecting(1)… fallo… Connecting(2)… Connected.
-        let states = drain_states(state_rx, state_tx).await;
+        let states = tokio::time::timeout(StdDuration::from_secs(5), collector)
+            .await
+            .expect("el colector no debe colgarse")
+            .expect("task del colector");
         let saw_second_attempt = states
             .iter()
             .any(|s| matches!(s, ConnectionState::Connecting { attempt } if *attempt >= 2));
