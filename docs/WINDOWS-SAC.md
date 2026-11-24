@@ -120,6 +120,11 @@ activarlo, los datos de diagnóstico opcionales deben estar habilitados. Es una
 decisión de seguridad del dueño de la máquina: SAC deja de bloquear apps
 desconocidas mientras esté apagado.
 
+> **Verificado el 24-nov-2026** en Windows 11 25H2 (build 26200.7462): con SAC
+> en 0, `cargo build`, `cargo fmt --check` y `cargo test --workspace` nativos
+> pasan; `oxi-gui.exe` contra `oxi-host-mock.exe` conecta y muestra la pantalla
+> del host.
+
 ### C. Otra máquina o VM sin SAC
 
 Windows Sandbox/una VM de desarrollo sin la política, o un equipo que no tenga
