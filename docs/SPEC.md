@@ -247,6 +247,10 @@ CPL/ECPL (Cap. 7).
   `A`/`E`/`I`/`M`/`P`/`S`/`T`/`U`/`i` (§3-3…§3-10, §A-1).
 - Control characters en el texto: `FF` clear, `SO` anidar pantalla (≤5 niveles), `SI` posicionar
   cursor, `ESC` + extendidos (color, voz, logo, charsets…), `HT` nombre de Track 1 (§3-14…§3-31).
+- **Eco local de captura** (presentación del terminal, no viaja al host): el estado B muestra una
+  `X` por cada tecla de PIN (§2-8); el estado F muestra el importe digitado y Clear limpia buffer
+  y eco (§2-17); el estado H muestra `X` con la entrada 9 `000`/`002` o los datos con `001`/`003`
+  (§2-23). El motor expone este eco como `InputEcho` y la GUI lo dibuja en el área de pantalla.
 - Carga por Screen/Keyboard Data Load (§10-11); anulación parcial por Override Reserved Screens
   (§10-55). `%` en reserved screens = placeholder dinámico (§3-10).
 - El número del último estado ejecutado se muestra arriba-izquierda del CRT (diagnóstico, §2-1).

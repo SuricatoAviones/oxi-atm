@@ -201,6 +201,39 @@ La barra superior muestra la conexión y el modo operativo; el panel derecho
 concentra el registro (rechazos, prints, dispensados, transiciones). La GUI
 usa `RUST_LOG=oxi_net=trace` igual que la CLI para volcar frames crudos.
 
+Durante la captura, la pantalla muestra el **eco local** del motor: una `X`
+por cada tecla del PIN (manual §2-8) y los dígitos del importe (§2-17). El PIN
+nunca se muestra en claro.
+
+### Windows nativo y Smart App Control
+
+oxi es multiplataforma (eframe/glow también compila en Windows), pero
+**Smart App Control** bloquea los binarios locales: no sólo el `.exe` final,
+también los **build scripts de Cargo** (`os error 4551`). En esta máquina ni
+`cargo check` nativo llega al final; el código no es el problema.
+
+- **Seguir en WSLg** (recomendado si no querés cambiar la seguridad de
+  Windows): la ventana se ve como una app nativa y usa el mismo binario.
+- **Desactivar Smart App Control**: Seguridad de Windows → Control de
+  aplicaciones y navegador → Smart App Control → **Desactivado**. Ojo: no se
+  puede volver a activar sin restablecer o reinstalar Windows (decisión tuya).
+  Después de desactivarlo, el trío `cargo fmt/clippy/test` y la GUI corren
+  nativos:
+
+  ```powershell
+  cargo run -p oxi-ui --features gui --bin oxi-gui -- --config perfil.toml
+  ```
+
+- **Acceso directo sin tocar SAC**: apuntarlo a WSLg.
+
+  ```powershell
+  wsl.exe -e bash -lc "cd /mnt/c/Users/luisa/Desktop/oxi-atm && cargo run -p oxi-ui --features gui --bin oxi-gui -- --config perfil.toml"
+  ```
+
+No hay una exclusión de Smart App Control para binarios locales, y firmar el
+`.exe` no destraba los build scripts de Cargo: para desarrollo nativo, la vía
+práctica es desactivar SAC (decisión tuya) o usar una máquina/VM sin SAC.
+
 ---
 
 ## Comandos de la CLI
@@ -260,7 +293,7 @@ Los tests usan únicamente **datos sintéticos** construidos por el proyecto
 
 | Síntoma | Causa probable / solución |
 |---|---|
-| `os error 4551` al ejecutar tests o binarios | Smart App Control de Windows bloquea binarios sin firma. Compilá/ejecutá desde WSL, o desactivá Smart App Control (decisión del usuario: es unidireccional). |
+| `os error 4551` al ejecutar tests, binarios o build scripts | Smart App Control de Windows bloquea binarios sin firma (incluidos los build scripts de Cargo). Compilá/ejecutá desde WSL, o desactivá Smart App Control (decisión del usuario: es unidireccional). |
 | La GUI no abre o falla al crear el contexto | Faltan Mesa/Wayland/X11 en WSL. Instalá el paquete de [Interfaz gráfica](#interfaz-gráfica-opcional) y verificá con `glxinfo -B`. |
 | El mock cierra la sesión si no pasa nada | Su silencio máximo es 30 min. Ajustalo con `--idle <segundos>` (por ejemplo `--idle 7200`). |
 | El host no logra conectar o no llega nada | oxi **conecta hacia** el host (rol cliente TCP). Verificá IP/puerto del perfil y que el host esté escuchando. |

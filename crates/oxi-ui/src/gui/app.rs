@@ -346,7 +346,7 @@ impl OxiApp {
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .max_height((height - 46.0).max(120.0))
+                    .max_height((height - 88.0).max(90.0))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         if self.state.screen_text.is_empty() {
@@ -368,6 +368,35 @@ impl OxiApp {
                             );
                         }
                     });
+                // Eco local de la captura (manual §2-8: 'X' por tecla de PIN;
+                // §2-17: importe digitado). Aproximación: va debajo del texto
+                // de la pantalla, porque el render aún no modela el cursor
+                // absoluto que deja el host en el área de display.
+                if let Some(echo) = &self.state.input_echo {
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let color = if echo.masked {
+                            theme::SCREEN_TEXT
+                        } else {
+                            theme::ACCENT
+                        };
+                        ui.label(
+                            RichText::new(&echo.text)
+                                .monospace()
+                                .size(24.0)
+                                .color(color),
+                        );
+                        ui.label(
+                            RichText::new("_")
+                                .monospace()
+                                .size(24.0)
+                                .color(theme::ACCENT),
+                        );
+                    });
+                }
             });
     }
 

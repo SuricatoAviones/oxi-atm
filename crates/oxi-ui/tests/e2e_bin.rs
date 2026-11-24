@@ -70,19 +70,33 @@ async fn runtime_should_complete_a_transaction_against_the_mock() {
     // 3) El host aprueba: llegan dispensado e impresión de "APROBADO".
     let mut saw_dispense = false;
     let mut saw_approved_print = false;
+    let mut saw_pin_echo = false;
+    let mut saw_amount_echo = false;
     timeout(WAIT, async {
         while !(saw_dispense && saw_approved_print) {
             let Some(update) = handle.updates.recv().await else {
                 panic!("runtime cerrado");
             };
-            if let UiUpdate::Log(line) = &update {
-                saw_dispense |= line.contains("dispensando");
-                saw_approved_print |= line.contains("APROBADO");
+            match &update {
+                UiUpdate::Log(line) => {
+                    saw_dispense |= line.contains("dispensando");
+                    saw_approved_print |= line.contains("APROBADO");
+                }
+                // Eco local del PIN (§2-8) y del importe (§2-17).
+                UiUpdate::InputEcho(Some(echo)) if echo.masked && echo.text == "XXXX" => {
+                    saw_pin_echo = true;
+                }
+                UiUpdate::InputEcho(Some(echo)) if !echo.masked && echo.text == "100" => {
+                    saw_amount_echo = true;
+                }
+                _ => {}
             }
         }
     })
     .await
     .expect("timeout esperando la respuesta del host");
+    assert!(saw_pin_echo, "el runtime debe emitir el eco del PIN");
+    assert!(saw_amount_echo, "el runtime debe emitir el eco del importe");
 
     // 4) Retiro del efectivo: Ready + cierre (tarjeta devuelta).
     assert!(handle.send(Event::CashTaken).await);

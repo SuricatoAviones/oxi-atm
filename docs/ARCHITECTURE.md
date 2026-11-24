@@ -132,8 +132,9 @@ reemplaza (cada load pisa el contenido, como en el protocolo).
   referencia y la que usan los tests; no compila egui.
 - **GUI opcional** (`oxi-gui`, feature `gui`): binario aparte con `egui/eframe` que reutiliza el
   mismo `runtime::spawn`, perfil TOML y `UiUpdate`. Dibuja pantalla, FDKs, teclado, tarjeta,
-  dispensador y logs; traduce clics/teclas a `Event` con `RuntimeHandle::try_send` y consume las
-  actualizaciones en cada frame. No toca `oxi-engine` ni `oxi-core`.
+  dispensador, eco local de PIN/importe y logs; traduce clics/teclas a `Event` con
+  `RuntimeHandle::try_send` y consume las actualizaciones en cada frame. No toca `oxi-engine`
+  ni `oxi-core`.
 - La GUI exige Rust 1.95 (eframe 0.37) y, bajo WSL, WSLg con Mesa y libs de Wayland/X11. El
   núcleo y la CLI conservan su MSRV anterior (1.85).
 

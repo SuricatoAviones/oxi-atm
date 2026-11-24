@@ -181,7 +181,7 @@ feature `gui`, con `egui/eframe` (MIT/Apache-2.0).
 | Tarea | Contenido |
 |---|---|
 | T9.1 | Esqueleto GUI: feature `gui`, binario `oxi-gui`, puente tokio↔egui (`RuntimeHandle::try_send`, consumo de `UiUpdate` por frame) y `GuiState` puro con tests |
-| T9.2 | Layout ATM: pantalla central con el render de `Screen`, barra de conexión/modo, 8 FDKs laterales y teclado numérico + Enter/Clear/Cancel cableados al motor |
+| T9.2 | Layout ATM: pantalla central con el render de `Screen` y eco local de PIN/importe, barra de conexión/modo, 8 FDKs laterales y teclado numérico + Enter/Clear/Cancel cableados al motor |
 | T9.3 | Hardware y operación: selector/inserción de tarjeta, dispensador con "Retirar efectivo", panel de logs y atajos de teclado físico |
 | T9.4 | Tests del view-model, README con instrucciones de la GUI y verificación manual de la transacción completa contra `oxi-host-mock` |
 
