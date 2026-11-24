@@ -6,8 +6,9 @@ probar hosts y drivers de ATM sin necesidad de un cajero físico.
 > Proyecto en desarrollo activo. Estado actual: **fases 0–7 y 9 del ROADMAP
 > completadas** (parser, red, máquina de estados, hardware virtual, host de
 > pruebas, CLI, seguridad de PIN y GUI). La fase 8 (refinos de protocolo) está
-> **en progreso**: T8.1 (ITR), T8.2 (rechazos finos + Override) y T8.3
-> (E/G/C) completados; quedan R/S/T/b/m y teclado. Ver [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **en progreso**: T8.1 (ITR), T8.2 (rechazos finos + Override), T8.3
+> (E/G/C) y T8.4a (R/S) completados; quedan T/b/m y teclado. Ver
+> [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 

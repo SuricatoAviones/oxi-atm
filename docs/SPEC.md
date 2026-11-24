@@ -205,8 +205,8 @@ descarga se hace por State Tables Load (§10-9); el primer char de los datos es 
 | L | Escritura de banda magnética | §2-38 |
 | M | PIN entry mejorado (reintentos vía Track 3) | §2-40 |
 | N | Cámara (**no soportado**) | §2-43 |
-| R | Entrada de importe multilingüe | §2-48 |
-| S | Selección de idioma por código de tarjeta | §2-50 |
+| R | Entrada de importe multilingüe; buffer y overlay desde extensión Z; overlay/pantalla language-dependent no compuestos (Q17) | §2-48 |
+| S | Selección de idioma por código de tarjeta; PLNDX/PINDX track 2 forward; extension para códigos 6–9; sin código → no-language exit (Q17) | §2-50 |
 | T | Lectura de tarjeta + habilitación temprana de teclado (DASH/EMV) | §2-52 |
 | V | Selección de grupo de pantallas por código de tarjeta | §2-57 |
 | W | Switch por keycode guardado en FDK buffer | §2-58 |
@@ -384,6 +384,7 @@ de menú estándar; **[PEND: Q7]** qué menús necesita el dueño.
 | Q14 | ITR: el manual no especifica cómo representar una FDK en buffer B ni el relleno (sólo mínimo 3 chars y `T`/`E` finales). Convención del simulador: FDK = letra A–I, dígitos tal cual, relleno con ceros a la izquierda; TVN/MAC vacíos. Se ajusta si aparece una traza ITR real. | ITR (fase 8) |
 | Q15 | Override Reserved Screens: el manual limita `D0000`–`D0010` y el valor `000`–`999`, pero no publica el mapping `D`→pantalla reservada. El simulador aplica el override cuando una pantalla referencia `D0000`–`D0010`; validar con una traza real. | Pantallas reservadas (fase 8) |
 | Q16 | G condición 000: el manual dice que la entrada 6 (decimales) se ignora con condición 000, pero también evalúa “a la derecha del punto decimal”. El simulador usa la entrada 6 como posición decimal; validar con una traza real. | Amount check (fase 8) |
+| Q17 | R/S: el overlay y el ajuste de pantalla por language group no están compuestos por el render; S sólo localiza el código con PINDX track 2 start-sentinel forward (otras combinaciones pendientes). Validar con una traza multilingüe real. | Idiomas (fase 8) |
 
 ---
 

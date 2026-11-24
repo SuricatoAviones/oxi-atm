@@ -160,6 +160,8 @@ pub struct Terminal {
     /// (manual §10-55). El manual no publica el mapping D→reservada; se
     /// aplica cuando una pantalla referencia D0000-D0010 (SPEC Q15).
     screen_overrides: BTreeMap<u8, u16>,
+    /// Código de idioma 0-9 elegido por S/V (manual §2-50/§2-57).
+    language_code: Option<u8>,
     /// Next state por FDK del estado corriente (F/H/X/Y).
     fdk_next: HashMap<char, StateNumber>,
     /// Salida por time-out del estado corriente (se usa en T3.7).
@@ -223,6 +225,7 @@ impl Terminal {
             awaiting_reply: false,
             screen: None,
             screen_overrides: BTreeMap::new(),
+            language_code: None,
             fdk_next: HashMap::new(),
             timeout_next: None,
             cancel_next: None,
@@ -633,6 +636,15 @@ impl Terminal {
         oxi_core::ScreenId::new(*user)
             .map(ScreenSelector::Customer)
             .unwrap_or(screen)
+    }
+
+    /// Código de idioma seleccionado (0-9), si S/V ya lo fijó.
+    pub fn language_code(&self) -> Option<u8> {
+        self.language_code
+    }
+
+    pub(crate) fn set_language_code(&mut self, code: Option<u8>) {
+        self.language_code = code;
     }
 
     pub(crate) fn set_config_id(&mut self, id: u16) {
