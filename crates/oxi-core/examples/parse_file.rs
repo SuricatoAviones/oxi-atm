@@ -117,9 +117,9 @@ fn describe(msg: &HostMessage) -> String {
                     let _ = write!(desc, "{} campo(s) crudo(s)", f.len());
                     "CassetteMapping(raw)"
                 }
-                CustomisationData::OverrideReservedScreens(f) => {
-                    let _ = write!(desc, "{} campo(s) crudo(s)", f.len());
-                    "OverrideReservedScreens(raw)"
+                CustomisationData::OverrideReservedScreens(overrides) => {
+                    let _ = write!(desc, "{} override(s)", overrides.len());
+                    "OverrideReservedScreens"
                 }
             };
             format!("Customisation::{name} [{desc}]")

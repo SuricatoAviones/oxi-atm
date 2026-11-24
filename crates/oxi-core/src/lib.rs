@@ -19,7 +19,7 @@ mod wire;
 pub use command::TerminalCommand;
 pub use customisation::{
     ConfigParams, CustomisationData, DateTimeLoad, Ecpl, EcplOption, FitDef, ScreenDef,
-    StateTableDef, TimerEntry,
+    ScreenOverride, StateTableDef, TimerEntry,
 };
 pub use error::ParseError;
 pub use host::{parse_host, HostMessage, ParseOptions};

@@ -159,10 +159,11 @@ pub fn spawn(config: &SimConfig) -> RuntimeHandle {
                             terminal.handle(Event::HostMessage(message))
                         }
                         Err(err) => {
+                            let reject = err.reject_code().to_owned();
                             let _ = engine_updates.send(UiUpdate::Log(format!(
-                                "mensaje del host inválido: {err}"
+                                "mensaje del host inválido: {err} (reject {reject})"
                             ))).await;
-                            continue;
+                            terminal.handle(Event::HostParseError { reject })
                         }
                     }
                 }

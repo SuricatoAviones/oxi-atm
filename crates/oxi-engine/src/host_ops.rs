@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use oxi_core::{
-    Disposition, HostMessage, InteractiveTransactionResponse, ModeContext, StateNumber,
-    TerminalCommand,
+    Disposition, HostMessage, InteractiveTransactionResponse, ModeContext, OperationalMode,
+    RawFields, StateNumber, StatusDescriptor, TerminalCommand, TerminalMessage,
 };
 
 use crate::crypto::{CryptoError, KeyMode};
@@ -24,10 +24,12 @@ pub(crate) fn handle_host(terminal: &mut Terminal, message: HostMessage) -> Vec<
     match oxi_core::disposition(&message, &context) {
         Disposition::NoAction => Vec::new(),
         Disposition::Reject => {
-            if matches!(&message, HostMessage::InteractiveTransactionResponse(_)) {
+            if let Some(code) = mode_reject_code(terminal.mode(), &message) {
                 vec![
-                    send(terminal.specific_command_reject("C03")),
-                    Action::Log("ITR fuera de In-Service: C/03 (§10-37)".into()),
+                    send(terminal.specific_command_reject(code)),
+                    Action::Log(format!(
+                        "mensaje rechazado por el modo operativo: {code} (§10-37)"
+                    )),
                 ]
             } else {
                 reject(terminal, &message)
@@ -50,8 +52,8 @@ pub(crate) fn handle_host(terminal: &mut Terminal, message: HostMessage) -> Vec<
             // (Tabla 10-38 'A3'); se aplican si son del tipo soportado.
             if terminal.awaiting_reply() {
                 vec![
-                    send(terminal.command_reject()),
-                    Action::Log("cambio de claves durante una transacción: reject".into()),
+                    send(terminal.specific_command_reject("C15")),
+                    Action::Log("cambio de claves durante una transacción: C/15".into()),
                 ]
             } else {
                 accept(terminal, message)
@@ -70,6 +72,59 @@ pub(crate) fn handle_host(terminal: &mut Terminal, message: HostMessage) -> Vec<
                 ]
             }
         }
+    }
+}
+
+/// Responde un frame que no se pudo parsear con el reject de Tabla 10-37.
+pub(crate) fn handle_parse_error(terminal: &Terminal, reject: &str) -> Vec<Action> {
+    if terminal.mode() == OperationalMode::PowerUp {
+        return vec![Action::Log(format!(
+            "frame inválido en Power-Up (sin respuesta): {reject}"
+        ))];
+    }
+    let response = terminal.specific_command_reject(reject);
+    let sent = match &response {
+        TerminalMessage::SolicitedStatus {
+            descriptor: StatusDescriptor::SpecificCommandReject,
+            ..
+        } => reject,
+        _ => "A",
+    };
+    vec![
+        send(response),
+        Action::Log(format!("frame inválido: reject {sent} (Tabla 10-37)")),
+    ]
+}
+
+/// Código C específico para mensajes válidos recibidos en el modo incorrecto.
+fn mode_reject_code(mode: OperationalMode, message: &HostMessage) -> Option<&'static str> {
+    if let HostMessage::Unknown { raw } = message {
+        return Some(unknown_reject_code(raw));
+    }
+    match (mode, message) {
+        // ITR en OOS/Supply; en In-Service el caso "no estado I" se maneja en
+        // AcceptIfTranReqElseReject (C04).
+        (
+            OperationalMode::OutOfService | OperationalMode::Supply,
+            HostMessage::InteractiveTransactionResponse(_),
+        ) => Some("C03"),
+        (
+            OperationalMode::OutOfService | OperationalMode::Supply,
+            HostMessage::TransactionReply(_),
+        ) => Some("C03"),
+        // Reply fuera del estado de transacción estando In-Service.
+        (OperationalMode::InService, HostMessage::TransactionReply(_)) => Some("C01"),
+        // Tabla 10-37 C04: comandos 4, 5, 6, 8 no aceptados In-Service.
+        (
+            OperationalMode::InService,
+            HostMessage::TerminalCommand(
+                TerminalCommand::SendSupplyCounters
+                | TerminalCommand::SendTallyInformation { .. }
+                | TerminalCommand::SendErrorLog
+                | TerminalCommand::SendDateAndTime,
+            ),
+        ) => Some("C04"),
+        _ => None,
     }
 }
 
@@ -161,9 +216,12 @@ fn accept(terminal: &mut Terminal, message: HostMessage) -> Vec<Action> {
         HostMessage::ExtendedEncryptionKeyChange { raw } => {
             actions.extend(apply_extended_key_change(terminal, &raw));
         }
-        HostMessage::Unknown { .. } => {
-            actions.push(send(terminal.command_reject()));
-            actions.push(Action::Log("mensaje no modelado: reject".into()));
+        HostMessage::Unknown { raw } => {
+            let code = unknown_reject_code(&raw);
+            actions.push(send(terminal.specific_command_reject(code)));
+            actions.push(Action::Log(format!(
+                "mensaje no modelado: reject {code} (Tabla 10-37)"
+            )));
         }
     }
     actions
@@ -195,8 +253,8 @@ fn respond_info(terminal: &Terminal, message: &HostMessage) -> Vec<Action> {
         TerminalCommand::SendTallyInformation { .. } | TerminalCommand::SendErrorLog => {
             // No soportados en Advance NDC (manual §10-4, §9-35/§9-36).
             vec![
-                send(terminal.command_reject()),
-                Action::Log("tallies / error log no soportados por Advance NDC".into()),
+                send(terminal.specific_command_reject("E01")),
+                Action::Log("tallies / error log no soportados por Advance NDC (E/01)".into()),
             ]
         }
         _ => vec![send(terminal.command_reject())],
@@ -449,6 +507,16 @@ fn config_id_text(terminal: &Terminal) -> String {
     format!("{:04}", terminal.config_id().unwrap_or(0))
 }
 
+/// Código B para mensajes que el parser no reconoce (Tabla 10-37).
+fn unknown_reject_code(raw: &RawFields) -> &'static str {
+    let class = raw.ascii_field(0).ok().and_then(|head| head.chars().next());
+    match class {
+        Some('1') => "B04", // código de comando de terminal ilegal
+        Some('3') => "B02", // sub-clase/identificador de load ilegal
+        _ => "B01",         // clase ilegal
+    }
+}
+
 /// Rechazo de comando con log del motivo.
 fn reject(terminal: &Terminal, message: &HostMessage) -> Vec<Action> {
     vec![
@@ -605,6 +673,74 @@ mod tests {
             )),
             "tras el power-up el terminal queda fuera de servicio y acepta la descarga"
         );
+    }
+
+    #[test]
+    fn malformed_frame_should_send_specific_reject_with_option_12() {
+        let mut terminal = Terminal::new();
+        terminal.set_mode(OperationalMode::InService);
+        terminal.config_mut().options.insert(12, 1);
+        let actions = handle_parse_error(&terminal, "B08");
+        let Action::Send(oxi_core::TerminalMessage::SolicitedStatus {
+            descriptor: oxi_core::StatusDescriptor::SpecificCommandReject,
+            data,
+            ..
+        }) = &actions[0]
+        else {
+            panic!("se esperaba Specific Command Reject: {actions:?}");
+        };
+        assert_eq!(data, &vec!["B08".to_string()]);
+    }
+
+    #[test]
+    fn malformed_frame_should_fall_back_to_command_reject_without_option_12() {
+        let mut terminal = Terminal::new();
+        terminal.set_mode(OperationalMode::InService);
+        let actions = handle_parse_error(&terminal, "B08");
+        assert!(matches!(
+            &actions[0],
+            Action::Send(oxi_core::TerminalMessage::SolicitedStatus {
+                descriptor: oxi_core::StatusDescriptor::CommandReject,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn unknown_terminal_command_should_specific_reject_b04() {
+        let mut terminal = Terminal::new();
+        terminal.set_mode(OperationalMode::OutOfService);
+        terminal.config_mut().options.insert(12, 1);
+        let message = parse_line(b"1\x1c\x1c\x1cZ");
+        assert!(matches!(message, HostMessage::Unknown { .. }));
+        let actions = terminal.handle(Event::HostMessage(message));
+        let Action::Send(oxi_core::TerminalMessage::SolicitedStatus {
+            descriptor: oxi_core::StatusDescriptor::SpecificCommandReject,
+            data,
+            ..
+        }) = &actions[0]
+        else {
+            panic!("se esperaba Specific Command Reject: {actions:?}");
+        };
+        assert_eq!(data, &vec!["B04".to_string()]);
+    }
+
+    #[test]
+    fn supply_counters_in_service_should_specific_reject_c04() {
+        let mut terminal = Terminal::new();
+        terminal.set_mode(OperationalMode::InService);
+        terminal.config_mut().options.insert(12, 1);
+        let message = parse_line(b"1\x1c\x1c\x1c4");
+        let actions = terminal.handle(Event::HostMessage(message));
+        let Action::Send(oxi_core::TerminalMessage::SolicitedStatus {
+            descriptor: oxi_core::StatusDescriptor::SpecificCommandReject,
+            data,
+            ..
+        }) = &actions[0]
+        else {
+            panic!("se esperaba Specific Command Reject: {actions:?}");
+        };
+        assert_eq!(data, &vec!["C04".to_string()]);
     }
 
     #[test]

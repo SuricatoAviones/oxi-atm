@@ -328,7 +328,7 @@ pub enum ScreenSelector {
     Customer(ScreenId),
     /// Pantalla de grupo/reservada: letra + número.
     Group {
-        /// Letra de grupo ('C', 'E', 'u', …).
+        /// Letra de grupo ('C', 'E', 'u', 'D' para overrides, …).
         letter: char,
         /// Número dentro del grupo (2 o 4 dígitos).
         digits: u16,
@@ -348,7 +348,7 @@ impl ScreenSelector {
                 }
             }
             Self::Group { letter, digits } => {
-                if matches!(letter, 'E' | 'X' | 'Y' | 'Z' | 'u') {
+                if matches!(letter, 'E' | 'X' | 'Y' | 'Z' | 'u' | 'D') {
                     format!("{letter}{digits:04}")
                 } else {
                     format!("{letter}{digits:02}")
@@ -382,9 +382,9 @@ impl ScreenSelector {
                     ))
                 }
             }
-            // Letra de grupo: E/X/Y/Z/u/l llevan 4 dígitos; el resto, 2.
+            // Letra de grupo: E/X/Y/Z/u/l/D llevan 4 dígitos; el resto, 2.
             Some(letter) if letter.is_ascii_alphabetic() => {
-                let digit_count = if matches!(letter, 'E' | 'X' | 'Y' | 'Z' | 'u' | 'l') {
+                let digit_count = if matches!(letter, 'E' | 'X' | 'Y' | 'Z' | 'u' | 'l' | 'D') {
                     4
                 } else {
                     2
@@ -646,6 +646,20 @@ mod tests {
     fn screen_id_should_display_four_digits() {
         let screen = ScreenId::new(15).expect("15 en rango");
         assert_eq!(screen.to_string(), "0015");
+    }
+
+    #[test]
+    fn reserved_override_screen_d0000_should_take_and_rebuild() {
+        let (selector, rest) = ScreenSelector::take("D0000HOLA").expect("D0000 válido");
+        assert_eq!(
+            selector,
+            ScreenSelector::Group {
+                letter: 'D',
+                digits: 0
+            }
+        );
+        assert_eq!(rest, "HOLA");
+        assert_eq!(selector.to_wire(), "D0000");
     }
 
     #[test]

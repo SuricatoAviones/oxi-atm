@@ -128,6 +128,11 @@ Formato: clase `3`, sub-clase `1`, identificador (§10-7, Tabla 10-2):
 Sub-clases: `2` Interactive Transaction Response (§10-79), `3` Encryption Key Change (§10-42),
 `4` Extended Encryption Key Change (§10-45). `F` (Initialise EKC) no soportado (§10-53).
 
+- **Override Reserved Screens** (§10-55): pares `D0000`–`D0010` + pantalla de usuario
+  `000`–`999`; si el valor se omite o es inválido, revierte (Tabla Note 34). Un `D` fuera de
+  rango se rechaza con `C/B18`. El manual no publica el mapping `D`→pantalla reservada; el
+  simulador aplica el override cuando una pantalla referencia `D0000`–`D0010` (Q15).
+
 > Los comandos "clásicos" Set Teller Totals / Initialize Terminal / Display Supervisor Frame /
 > SendMKDAT / Send PPMA / Send Third Party Data **no aparecen** en este manual. Decisión del
 > dueño (Q2/Q3): su host es **solo Advance NDC**; si alguno llegara, se trata como `Unknown` +
@@ -377,6 +382,7 @@ de menú estándar; **[PEND: Q7]** qué menús necesita el dueño.
 | Q7 | ¿Qué funciones de supervisor usa tu host realmente (replenish, settlement, test cash)? | Alcance supervisor |
 | Q10 | ¿Default close state: tu customización usa un número concreto que debamos respetar? | Máquina de estados |
 | Q14 | ITR: el manual no especifica cómo representar una FDK en buffer B ni el relleno (sólo mínimo 3 chars y `T`/`E` finales). Convención del simulador: FDK = letra A–I, dígitos tal cual, relleno con ceros a la izquierda; TVN/MAC vacíos. Se ajusta si aparece una traza ITR real. | ITR (fase 8) |
+| Q15 | Override Reserved Screens: el manual limita `D0000`–`D0010` y el valor `000`–`999`, pero no publica el mapping `D`→pantalla reservada. El simulador aplica el override cuando una pantalla referencia `D0000`–`D0010`; validar con una traza real. | Pantallas reservadas (fase 8) |
 
 ---
 
