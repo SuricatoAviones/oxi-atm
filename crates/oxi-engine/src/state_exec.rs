@@ -60,6 +60,8 @@ pub(crate) fn enter_state(terminal: &mut Terminal, number: StateNumber) -> Vec<A
         'I' => state_transaction_request(terminal, &table),
         'J' => state_close(terminal, &table),
         'K' => state_fit_switch(terminal, &table),
+        'R' => state_enhanced_amount_entry(terminal, &table),
+        'S' => state_language_switch(terminal, &table),
         'X' => state_fdk_info(terminal, &table),
         'Y' => state_eight_fdk(terminal, &table),
         'W' => state_fdk_switch(terminal, &table),
@@ -658,6 +660,108 @@ fn state_close(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
     actions
 }
 
+/// Código de idioma 0-9 desde la pista 2 usando PLNDX/PINDX de la FIT.
+///
+/// Soporta el caso PINDX = track 2 desde el start sentinel, forwards (el
+/// habitual). Otras combinaciones de track/dirección quedan pendientes
+/// (SPEC Q17); sin FIT/código válido devuelve `None`.
+fn card_language_code(terminal: &Terminal) -> Option<u8> {
+    let fit = fit_match(terminal)?;
+    let pindx = fit.entries.get(32..35)?;
+    let digits: String = pindx.iter().map(|byte| format!("{byte:02X}")).collect();
+    if digits.chars().nth(4)? != '0' {
+        return None;
+    }
+    let plndx = *fit.entries.get(35)? as usize;
+    if plndx == 0 || plndx > 0x7F {
+        return None;
+    }
+    let track2 = terminal.card()?.track2.as_deref()?;
+    let code = track2.chars().nth(plndx)?.to_digit(10)?;
+    Some(code as u8)
+}
+
+/// R - Enhanced Amount Entry (§2-48, Tabla 2-32 + extensión Z 2-33).
+fn state_enhanced_amount_entry(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
+    let Some(extension_number) = entry_state(&table.entries, 9) else {
+        return default_close(terminal);
+    };
+    let Some(extension) = terminal.states().get(&extension_number).cloned() else {
+        return default_close(terminal);
+    };
+    if extension.state_type != 'Z' {
+        return default_close(terminal);
+    }
+    let Some(buffer) = entry(&extension.entries, 2)
+        .and_then(|text| text.parse::<u8>().ok())
+        .filter(|value| *value <= 2)
+    else {
+        return default_close(terminal);
+    };
+    let (target, max) = match buffer {
+        0 => (BufferId::Amount, amount_width(terminal)),
+        1 => (BufferId::B, 32),
+        _ => (BufferId::C, 32),
+    };
+    terminal.set_pending(Some(Pending::Digits {
+        target,
+        max,
+        masked: false,
+    }));
+    terminal.set_fdk_next_from_entries(&table.entries, 5);
+    terminal.set_timeout_next(entry_state(&table.entries, 3));
+    terminal.set_cancel_next(entry_state(&table.entries, 4));
+
+    let mut actions = Vec::new();
+    if let Some(screen) = entry_screen(&table.entries, 2) {
+        actions.extend(terminal.set_screen(Some(screen)));
+    }
+    if let Some(overlay) = entry_screen(&extension.entries, 3) {
+        // El overlay define el cursor/echo del importe; el render actual no
+        // compone overlays (SPEC Q17), se registra para diagnóstico.
+        actions.push(Action::Log(format!(
+            "R: overlay {overlay:?} no compuesto por el render"
+        )));
+    }
+    if entry_mask(&extension.entries, 5) == Some(1) && terminal.language_code().is_some() {
+        actions.push(Action::Log(
+            "R: pantalla language-dependent sin ajuste de grupo (SPEC Q17)".into(),
+        ));
+    }
+    actions.push(start_timer(terminal, 0));
+    actions
+}
+
+/// S - Language Code Switch (§2-50, Tabla 2-34 + extensión Z 2-35).
+fn state_language_switch(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
+    let language = card_language_code(terminal);
+    terminal.set_language_code(language);
+    let extension = entry_state(&table.entries, 9)
+        .and_then(|number| terminal.states().get(&number).cloned())
+        .filter(|state| state.state_type == 'Z');
+
+    let next = match language {
+        Some(code @ 0..=5) => entry_state(&table.entries, 3 + code as usize),
+        Some(code @ 6..=9) => match &extension {
+            Some(extension) => entry_state(&extension.entries, 2 + (code - 6) as usize),
+            // Sin extensión (entrada 9 = 255), 6-9 usan el no-language exit.
+            None => entry_state(&table.entries, 2),
+        },
+        _ => entry_state(&table.entries, 2),
+    };
+
+    let mut actions = vec![Action::Log(format!(
+        "S: language code {language:?} → {}",
+        next.map(|state| state.value().to_string())
+            .unwrap_or_else(|| "default close".into())
+    ))];
+    match next {
+        Some(next) => actions.extend(enter_state(terminal, next)),
+        None => actions.extend(default_close(terminal)),
+    }
+    actions
+}
+
 /// X - FDK Information Entry (§2-59).
 fn state_fdk_info(terminal: &mut Terminal, table: &StateTableDef) -> Vec<Action> {
     let mask = entry_mask(&table.entries, 8).unwrap_or(0);
@@ -920,7 +1024,7 @@ pub(crate) mod tests_support {
 
 #[cfg(test)]
 mod interpreter_tests {
-    use oxi_core::{CustomisationData, Fdk, ScreenSelector, StateNumber, StateTableDef};
+    use oxi_core::{CustomisationData, Fdk, FitDef, ScreenSelector, StateNumber, StateTableDef};
 
     use crate::event::{Action, Event, Key};
     use crate::terminal::{apply_customisation, Terminal};
@@ -1202,6 +1306,70 @@ mod interpreter_tests {
         let actions =
             crate::state_exec::enter_state(&mut terminal, StateNumber::new(0).expect("en rango"));
         assert!(displays_screen(&actions, 52), "C → 010 (J)");
+    }
+
+    /// R: el importe va al buffer B indicado por la extensión Z (§2-48).
+    #[test]
+    fn state_r_should_capture_amount_in_selected_buffer() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'R', "020200201200201255255002"),
+            table(2, 'Z', "001021000000000000000000"),
+            table(200, 'J', "052255052052052052052000"),
+            table(201, 'J', "053255053053053053053000"),
+        ]);
+        let actions =
+            crate::state_exec::enter_state(&mut terminal, StateNumber::new(0).expect("en rango"));
+        assert!(displays_screen(&actions, 20), "pantalla del estado R");
+
+        for digit in ['1', '2', '3'] {
+            terminal.handle(Event::KeyPressed(Key::Digit(digit)));
+        }
+        let actions = terminal.handle(Event::KeyPressed(Key::Enter));
+        assert_eq!(terminal.buffers().b, "123");
+        assert!(displays_screen(&actions, 52), "FDK A → estado 200");
+    }
+
+    /// S: sin language code en la tarjeta va al no-language exit (§2-50).
+    #[test]
+    fn state_s_without_language_code_should_take_no_language_exit() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'S', "200200200200200200200255"),
+            table(200, 'J', "052255052052052052052000"),
+        ]);
+        let actions =
+            crate::state_exec::enter_state(&mut terminal, StateNumber::new(0).expect("en rango"));
+        assert!(displays_screen(&actions, 52));
+        assert_eq!(terminal.language_code(), None);
+    }
+
+    /// S: el código 3 se localiza vía PLNDX/PINDX de la FIT en track 2.
+    #[test]
+    fn state_s_should_read_language_code_from_fit() {
+        let mut terminal = terminal_with(vec![
+            table(0, 'A', "010001002002002002000001"),
+            table(1, 'S', "200200200200201200200255"),
+            table(200, 'J', "052255052052052052052000"),
+            table(201, 'J', "053255053053053053053000"),
+        ]);
+        let mut entries = vec![0u8; 41];
+        entries[0] = 0; // PIDDX: track 2 desde el inicio
+        entries[1..6].copy_from_slice(b";1234"); // PFIID sintético
+        entries[35] = 3; // PLNDX: posición 3 de la pista 2
+        let _ = apply_customisation(
+            &mut terminal,
+            CustomisationData::Fits(vec![FitDef { number: 1, entries }]),
+        );
+
+        enter(&mut terminal, 0);
+        let actions = terminal.handle(Event::CardInserted(crate::event::Card {
+            track2: Some(";1234=99?".into()),
+            ..crate::event::Card::default()
+        }));
+        assert_eq!(terminal.language_code(), Some(3));
+        assert!(
+            displays_screen(&actions, 53),
+            "language code 3 → estado 201"
+        );
     }
 
     /// Cancel usa el cancel next state del estado corriente.
