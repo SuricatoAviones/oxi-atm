@@ -8,7 +8,9 @@ probar hosts y drivers de ATM sin necesidad de un cajero físico.
 > pruebas, CLI, seguridad de PIN y GUI). La fase 8 (refinos de protocolo) está
 > **en progreso**: T8.1 (ITR), T8.2 (rechazos finos + Override), T8.3
 > (E/G/C), T8.4a (R/S) y T8.4b (T/b/m) completados; queda el teclado/Q6.
-> Ver [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> Ver [`docs/ROADMAP.md`](docs/ROADMAP.md) y
+> [`docs/PENDING.md`](docs/PENDING.md) (todo lo que falta y lo que está
+> fuera de alcance).
 
 ---
 
@@ -274,7 +276,8 @@ desactivar SAC (decisión tuya) o usar una máquina/VM sin SAC.
 
 Documentación de diseño: [`docs/SPEC.md`](docs/SPEC.md) (protocolo),
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
-[`docs/DESIGN.md`](docs/DESIGN.md) y [`docs/ROADMAP.md`](docs/ROADMAP.md).
+[`docs/DESIGN.md`](docs/DESIGN.md), [`docs/ROADMAP.md`](docs/ROADMAP.md) y
+[`docs/PENDING.md`](docs/PENDING.md) (pendientes y limitaciones).
 
 ---
 
