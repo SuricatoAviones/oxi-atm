@@ -11,7 +11,7 @@ use std::time::Duration;
 use oxi_core::{
     ConfigParams, CustomisationData, DateTimeLoad, Ecpl, Fdk, FdkMask, FitDef, Luno, Mcn,
     OperationalMode, ScreenDef, ScreenSelector, StateNumber, StateTableDef, StatusDescriptor,
-    TerminalMessage,
+    TerminalMessage, TransactionRequest,
 };
 
 use crate::crypto::{CryptoError, SecurityConfig};
@@ -26,6 +26,11 @@ const DEFAULT_TIMER: Duration = Duration::from_secs(30);
 /// state inválido (SPEC §14 Q10: el manual no lo define; el driver real usa
 /// la batería 200+ para cierres; configurable en el futuro).
 const DEFAULT_CLOSE_STATE: u16 = 200;
+
+/// Timer interno para el screen timer de una ITR (manual §10-79: 001-255
+/// ticks de 800 ms). 98-99 están reservados por el manual, así que no choca
+/// con timers configurables por el host.
+pub(crate) const ITR_TIMER: u8 = 98;
 
 /// Buffers de la transacción (manual §2-4: qué inicializa el estado A).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,6 +258,20 @@ impl Terminal {
     /// Eco local del campo de entrada en curso (ver [`InputEcho`]).
     pub fn input_echo(&self) -> Option<InputEcho> {
         match &self.pending {
+            Some(Pending::Itr { response }) => match response.display_flag {
+                // 0 = no mostrar la entrada (§10-79).
+                '0' => None,
+                // 2 = mostrar '*' por cada tecla (§10-79).
+                '2' => Some(InputEcho {
+                    text: "*".repeat(self.buffers.b.chars().count().min(30)),
+                    masked: true,
+                }),
+                // 1 = mostrar los datos tal cual.
+                _ => Some(InputEcho {
+                    text: self.buffers.b.clone(),
+                    masked: false,
+                }),
+            },
             Some(Pending::Pin { .. }) => Some(InputEcho {
                 text: "X".repeat(self.buffers.pin.chars().count().min(30)),
                 masked: true,
@@ -333,6 +352,11 @@ impl Terminal {
     }
 
     fn handle_key(&mut self, key: Key) -> Vec<Action> {
+        // ITR: el host definió teclas activas y buffer B; no pasa por las
+        // salidas del estado I ni por las máscaras de state table (§10-79).
+        if matches!(self.pending, Some(Pending::Itr { .. })) {
+            return self.handle_itr_key(key);
+        }
         if key == Key::Cancel {
             return crate::state_exec::on_cancel(self);
         }
@@ -406,6 +430,107 @@ impl Terminal {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Teclas durante una ITR: sólo las activas por el host; los datos van a
+    /// buffer B y el último char es 'E' (Cancel) o 'T' (timeout) (§9-2 m).
+    fn handle_itr_key(&mut self, key: Key) -> Vec<Action> {
+        let Some(Pending::Itr { response }) = self.pending.clone() else {
+            return Vec::new();
+        };
+        match key {
+            Key::Digit(digit) => {
+                if response.numeric_active() && self.buffers.b.len() < 32 {
+                    self.buffers.b.push(digit);
+                }
+                Vec::new()
+            }
+            Key::Clear => {
+                self.buffers.b.clear();
+                Vec::new()
+            }
+            Key::Enter if response.enter_active() => self.finish_itr(None),
+            Key::Fdk(Fdk::A) if response.fdk_active(Fdk::A) => self.finish_itr(None),
+            Key::Fdk(fdk) if response.fdk_active(fdk) => {
+                // Convención del simulador (SPEC Q14): la FDK seleccionada se
+                // representa por su letra A-I, con ceros a la izquierda.
+                self.buffers.b = fdk.as_char().to_string();
+                self.finish_itr(None)
+            }
+            Key::Cancel if response.cancel_active() => self.finish_itr(Some('E')),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Cierra la ITR y envía el TRQ abreviado de Tabla 9-2 (sólo buffer B).
+    fn finish_itr(&mut self, terminator: Option<char>) -> Vec<Action> {
+        if !matches!(self.pending, Some(Pending::Itr { .. })) {
+            return Vec::new();
+        }
+        let Some(mcn_char) = self.pending_mcn else {
+            return vec![Action::Log("ITR sin MCN pendiente: no se responde".into())];
+        };
+        let Ok(mcn) = Mcn::new(mcn_char, true) else {
+            return vec![Action::Log(format!(
+                "ITR con MCN inválido '{mcn_char}': no se responde"
+            ))];
+        };
+
+        let mut data = self.buffers.b.clone();
+        if let Some(terminator) = terminator {
+            // El máximo del buffer B es 32; dejamos lugar al terminador.
+            data.truncate(31);
+            data.push(terminator);
+        }
+        if data.len() < 3 {
+            data = format!("{data:0>3}");
+        }
+        self.buffers.b = data.clone();
+
+        // Tabla 9-2: clase 1/1 abreviada, sólo buffer B (el resto vacío).
+        let request = TransactionRequest {
+            luno: self.luno().clone(),
+            tvn: None,
+            top_of_receipt: '1',
+            mcn,
+            track2: None,
+            track3: None,
+            op_code: None,
+            amount: None,
+            buffer_a: None,
+            buffer_b: Some(data),
+            buffer_c: None,
+            track1: None,
+            status_data: None,
+        };
+        if let Err(err) = request.to_bytes() {
+            return vec![Action::Log(format!("TRQ de ITR inválido: {err}"))];
+        }
+
+        self.pending = Some(Pending::TransactionReply);
+        self.awaiting_reply = true;
+        vec![
+            Action::CancelTimer(ITR_TIMER),
+            Action::CancelTimer(3),
+            Action::Send(TerminalMessage::TransactionRequest(Box::new(request))),
+            Action::StartTimer {
+                timer: 3,
+                after: self.config.timer_duration(3),
+            },
+            Action::Log("ITR: respuesta abreviada enviada al host".into()),
+        ]
+    }
+
+    /// Timer de pantalla ITR vencido: buffer B + 'T' y TRQ abreviado.
+    pub(crate) fn itr_timeout(&mut self) -> Vec<Action> {
+        if !matches!(self.pending, Some(Pending::Itr { .. })) {
+            return vec![Action::Log("timer 98 sin ITR pendiente".into())];
+        }
+        let mut actions = vec![Action::Log(
+            "ITR: timer de pantalla vencido; se envía 'T'".into(),
+        )];
+        actions.extend(self.finish_itr(Some('T')));
+        actions
     }
 
     fn handle_card_inserted(&mut self, card: Card) -> Vec<Action> {
@@ -495,7 +620,8 @@ impl Terminal {
         self.awaiting_reply = awaiting;
     }
 
-    pub(crate) fn awaiting_reply(&self) -> bool {
+    /// ¿Hay una transacción esperando Transaction Reply/ITR? (Tabla 10-39).
+    pub fn awaiting_reply(&self) -> bool {
         self.awaiting_reply
     }
 

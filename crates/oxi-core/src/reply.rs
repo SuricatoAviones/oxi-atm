@@ -6,7 +6,7 @@
 //! El campo de secuencia llega vacío y el terminal lo ignora (manual §10-58).
 
 use crate::types::{
-    CardReturnFlag, NoteCounts, PrintGroup, PrinterFlag, ScreenSelector, StateNumber,
+    CardReturnFlag, Fdk, NoteCounts, PrintGroup, PrinterFlag, ScreenSelector, StateNumber,
 };
 use crate::wire::RawFields;
 use crate::ParseError;
@@ -218,7 +218,22 @@ impl InteractiveTransactionResponse {
         let Some(display_flag) = chars.next() else {
             return Err(ParseError::malformed("ITR sin flag de display (§10-79)"));
         };
+        if !matches!(display_flag, '0' | '1' | '2') {
+            return Err(ParseError::invalid_field(
+                "ITR display flag",
+                format!("'{display_flag}': debe ser 0, 1 o 2 (§10-79)"),
+            ));
+        }
         let active_keys: String = chars.collect();
+        if active_keys.is_empty() || active_keys.len() > 10 {
+            return Err(ParseError::invalid_field(
+                "ITR active keys",
+                format!(
+                    "'{active_keys}': longitud {} fuera de 1..=10 (§10-79)",
+                    active_keys.len()
+                ),
+            ));
+        }
         if !active_keys.chars().all(|c| c == '0' || c == '1') {
             return Err(ParseError::invalid_field(
                 "ITR active keys",
@@ -236,6 +251,15 @@ impl InteractiveTransactionResponse {
                         format!("'{text}' debe ser 3 dígitos (§10-79)"),
                     ));
                 }
+                let ticks: u16 = text
+                    .parse()
+                    .map_err(|_| ParseError::invalid_field("ITR screen timer", text))?;
+                if ticks > 255 {
+                    return Err(ParseError::invalid_field(
+                        "ITR screen timer",
+                        format!("'{text}': rango 000-255 ticks (§10-79)"),
+                    ));
+                }
                 Some(text.to_owned())
             }
             None => None,
@@ -250,6 +274,50 @@ impl InteractiveTransactionResponse {
             screen_timer,
             screen_data,
         })
+    }
+
+    /// ¿Está activo el teclado numérico completo? (campo h, char 1).
+    pub fn numeric_active(&self) -> bool {
+        self.key_active(0)
+    }
+
+    /// ¿Está activa esta FDK? (campo h; 'E' no participa de ITR, §10-79).
+    pub fn fdk_active(&self, fdk: Fdk) -> bool {
+        let index = match fdk {
+            Fdk::A => 1,
+            Fdk::B => 2,
+            Fdk::C => 3,
+            Fdk::D => 4,
+            Fdk::E => return false,
+            Fdk::F => 6,
+            Fdk::G => 7,
+            Fdk::H => 8,
+            Fdk::I => 9,
+        };
+        self.key_active(index)
+    }
+
+    /// ¿Está activa la tecla Cancel? (campo h, char 6).
+    pub fn cancel_active(&self) -> bool {
+        self.key_active(5)
+    }
+
+    /// Enter está activo sólo si también lo está el teclado numérico y FDK A
+    /// (Nota de §10-79).
+    pub fn enter_active(&self) -> bool {
+        self.numeric_active() && self.fdk_active(Fdk::A)
+    }
+
+    /// Ticks del timer de pantalla; `None` para 000 (indefinido).
+    pub fn screen_timer_ticks(&self) -> Option<u16> {
+        self.screen_timer
+            .as_deref()
+            .and_then(|text| text.parse::<u16>().ok())
+            .filter(|ticks| *ticks > 0)
+    }
+
+    fn key_active(&self, index: usize) -> bool {
+        self.active_keys.chars().nth(index) == Some('1')
     }
 }
 
@@ -352,5 +420,47 @@ mod tests {
     fn itr_should_reject_bad_timer() {
         let body = b"3\x1c\x1c\x1c2100\x1c3X";
         assert!(InteractiveTransactionResponse::parse(&raw(body)).is_err());
+    }
+
+    #[test]
+    fn itr_should_reject_display_flag_outside_0_2() {
+        let body = b"3\x1c\x1c\x1c2300\x1c030";
+        assert!(InteractiveTransactionResponse::parse(&raw(body)).is_err());
+    }
+
+    #[test]
+    fn itr_should_reject_empty_or_long_active_keys() {
+        assert!(InteractiveTransactionResponse::parse(&raw(b"3\x1c\x1c\x1c21\x1c000")).is_err());
+        let too_long = format!("3\x1c\x1c\x1c21{}\x1c000", "1".repeat(11));
+        assert!(InteractiveTransactionResponse::parse(&raw(too_long.as_bytes())).is_err());
+    }
+
+    #[test]
+    fn itr_should_reject_timer_above_255_ticks() {
+        let body = b"3\x1c\x1c\x1c2100\x1c256";
+        assert!(InteractiveTransactionResponse::parse(&raw(body)).is_err());
+    }
+
+    #[test]
+    fn itr_helpers_should_map_active_keys() {
+        // numérico + FDK A + FDK B + Cancel (posiciones 1, 2, 3 y 6).
+        let body = format!("3\x1c\x1c\x1c21{}\x1c005", "1110010000");
+        let itr = InteractiveTransactionResponse::parse(&raw(body.as_bytes())).expect("ITR válida");
+        assert!(itr.numeric_active());
+        assert!(itr.fdk_active(Fdk::A));
+        assert!(itr.fdk_active(Fdk::B));
+        assert!(!itr.fdk_active(Fdk::C));
+        assert!(!itr.fdk_active(Fdk::E));
+        assert!(itr.cancel_active());
+        assert!(!itr.fdk_active(Fdk::I));
+        assert!(itr.enter_active());
+        assert_eq!(itr.screen_timer_ticks(), Some(5));
+    }
+
+    #[test]
+    fn itr_timer_000_should_mean_indefinite() {
+        let body = b"3\x1c\x1c\x1c2100\x1c000";
+        let itr = InteractiveTransactionResponse::parse(&raw(body)).expect("ITR válida");
+        assert_eq!(itr.screen_timer_ticks(), None);
     }
 }

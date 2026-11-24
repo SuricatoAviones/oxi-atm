@@ -3,12 +3,17 @@
 //! La política vive en `oxi_core::disposition` (Tablas 10-38/39/40); aquí se
 //! ejecuta: responder, aplicar la customización o rechazar con log.
 
-use oxi_core::{Disposition, HostMessage, ModeContext, StateNumber, TerminalCommand};
+use std::time::Duration;
+
+use oxi_core::{
+    Disposition, HostMessage, InteractiveTransactionResponse, ModeContext, StateNumber,
+    TerminalCommand,
+};
 
 use crate::crypto::{CryptoError, KeyMode};
-use crate::event::Action;
+use crate::event::{Action, Pending};
 use crate::state_exec::enter_state;
-use crate::terminal::{apply_customisation, ready_action, send, Terminal};
+use crate::terminal::{apply_customisation, ready_action, send, Terminal, ITR_TIMER};
 
 /// Procesa un mensaje del host según el modo operativo.
 pub(crate) fn handle_host(terminal: &mut Terminal, message: HostMessage) -> Vec<Action> {
@@ -18,7 +23,16 @@ pub(crate) fn handle_host(terminal: &mut Terminal, message: HostMessage) -> Vec<
     };
     match oxi_core::disposition(&message, &context) {
         Disposition::NoAction => Vec::new(),
-        Disposition::Reject => reject(terminal, &message),
+        Disposition::Reject => {
+            if matches!(&message, HostMessage::InteractiveTransactionResponse(_)) {
+                vec![
+                    send(terminal.specific_command_reject("C03")),
+                    Action::Log("ITR fuera de In-Service: C/03 (§10-37)".into()),
+                ]
+            } else {
+                reject(terminal, &message)
+            }
+        }
         Disposition::RespondConfigId => vec![send(
             terminal.terminal_state('6', vec![config_id_text(terminal)]),
         )],
@@ -43,11 +57,50 @@ pub(crate) fn handle_host(terminal: &mut Terminal, message: HostMessage) -> Vec<
                 accept(terminal, message)
             }
         }
-        Disposition::AcceptIfTranReqElseReject => vec![
-            send(terminal.command_reject()),
-            Action::Log("Interactive Transaction Response: no soportada en v1 (fase 8)".into()),
-        ],
+        Disposition::AcceptIfTranReqElseReject => {
+            if terminal.awaiting_reply() {
+                match message {
+                    HostMessage::InteractiveTransactionResponse(itr) => accept_itr(terminal, itr),
+                    other => reject(terminal, &other),
+                }
+            } else {
+                vec![
+                    send(terminal.specific_command_reject("C04")),
+                    Action::Log("ITR fuera del estado I: C/04 (§10-37)".into()),
+                ]
+            }
+        }
     }
+}
+
+/// Acepta una Interactive Transaction Response: pantalla dinámica, teclas
+/// activas y screen timer (manual §10-79).
+fn accept_itr(terminal: &mut Terminal, itr: InteractiveTransactionResponse) -> Vec<Action> {
+    let screen_data = itr.screen_data.clone();
+    let display_flag = itr.display_flag;
+    let active_keys = itr.active_keys.clone();
+    let after = itr
+        .screen_timer_ticks()
+        .map(|ticks| Duration::from_millis(u64::from(ticks) * 800));
+
+    terminal.buffers_mut().b.clear();
+    terminal.set_pending(Some(Pending::Itr { response: itr }));
+    let mut actions = vec![
+        // La respuesta final llegará como un nuevo TRQ; el timer 03 original
+        // se suspende mientras el cardholder interactúa.
+        Action::CancelTimer(3),
+        Action::CancelTimer(ITR_TIMER),
+        Action::Log(format!(
+            "ITR: pantalla dinámica (display '{display_flag}', teclas '{active_keys}')"
+        )),
+    ];
+    actions.extend(terminal.set_screen(None));
+    actions.push(Action::DisplayData(screen_data));
+    actions.push(Action::StartTimer {
+        timer: ITR_TIMER,
+        after,
+    });
+    actions
 }
 
 /// Acepta y aplica el mensaje (respondiendo Ready).

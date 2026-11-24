@@ -228,6 +228,11 @@ legales, sin sección propia en el Cap. 2 — **[PEND: Q5]**.
 - En la ITR, el campo de teclas activas es una **cadena binaria** donde el primer bit habilita el
   teclado numérico y los siguientes corresponden a las FDKs (§10-79) — formato distinto a la
   máscara decimal de las state tables.
+- **ITR**: se acepta sólo In-Service y en estado I (Tabla 10-38 'A2'); el display flag es
+  `0`=no mostrar, `1`=mostrar, `2`=`*` por tecla. El screen timer va en ticks de 800 ms
+  (`000`=indefinido, `001`–`255`). La respuesta es un **TRQ abreviado** (Tabla 9-2) con buffer B;
+  al vencer el timer el último char es `T` y con Cancel es `E` (Tabla 9-1 campo m). Ver Q14 para
+  la convención de FDK/relleno adoptada por el simulador.
 
 ### 5.4 Time-Out State (§2-89)
 
@@ -371,6 +376,7 @@ de menú estándar; **[PEND: Q7]** qué menús necesita el dueño.
 | Q6 | ¿La descarga real trae asociación pantalla↔teclado, o teclados locales estándar (2.06+)? | Modelo de teclados |
 | Q7 | ¿Qué funciones de supervisor usa tu host realmente (replenish, settlement, test cash)? | Alcance supervisor |
 | Q10 | ¿Default close state: tu customización usa un número concreto que debamos respetar? | Máquina de estados |
+| Q14 | ITR: el manual no especifica cómo representar una FDK en buffer B ni el relleno (sólo mínimo 3 chars y `T`/`E` finales). Convención del simulador: FDK = letra A–I, dígitos tal cual, relleno con ceros a la izquierda; TVN/MAC vacíos. Se ajusta si aparece una traza ITR real. | ITR (fase 8) |
 
 ---
 

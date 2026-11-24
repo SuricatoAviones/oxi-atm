@@ -639,6 +639,8 @@ pub(crate) fn on_timer(terminal: &mut Terminal, timer: u8) -> Vec<Action> {
                 Action::Send(terminal.unsolicited(condition)),
             ]
         }
+        // Timer interno 98: screen timer de una ITR (§10-79).
+        crate::terminal::ITR_TIMER => terminal.itr_timeout(),
         other => vec![Action::Log(format!(
             "timer {other:02} sin manejador (fases posteriores)"
         ))],
